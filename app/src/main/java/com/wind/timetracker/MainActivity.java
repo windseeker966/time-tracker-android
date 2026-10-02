@@ -322,7 +322,7 @@ public final class MainActivity extends Activity {
     private void refreshNightModeButton() {
         if (nightModeButton == null) return;
         nightModeButton.setText(CollectorService.isNightModeEnabled(this)
-                ? "深夜模式：已开启（00:30–06:00 每 15 分钟提醒，点击关闭）"
+                ? "深夜模式：已开启（台北时间 0:00–5:00 每次解锁立即提醒，点击关闭）"
                 : "深夜模式：已关闭（点击开启）");
     }
 

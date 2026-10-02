@@ -42,6 +42,9 @@ import android.widget.TextView;
 import android.widget.Toast;
 
 import java.time.LocalTime;
+import java.time.ZoneId;
+import java.time.ZonedDateTime;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
@@ -95,11 +98,12 @@ public final class CollectorService extends Service {
     static final String KEY_REST_UNTIL_ELAPSED = "rest_until_elapsed";
     static final String KEY_SNOOZE_USED = "snooze_used";
     static final String KEY_LAST_ALERT_ELAPSED = "last_alert_elapsed";
-    static final String KEY_NIGHT_ANCHOR_ELAPSED = "night_anchor_elapsed";
+    /** 旧版本的深夜 15 分钟计时起点，只用于清理。 */
+    private static final String KEY_NIGHT_ANCHOR_ELAPSED_LEGACY = "night_anchor_elapsed";
     static final String KEY_NIGHT_MODE_ENABLED = "night_mode_enabled";
-    static final int NIGHT_START_MINUTE_OF_DAY = 30;       // 00:30
-    static final int NIGHT_END_MINUTE_OF_DAY = 6 * 60;     // 06:00
-    static final long NIGHT_LIMIT_MS = 15 * 60_000L;
+    // 深夜时段按台北时间（UTC+8）判断，与手机系统时区无关。
+    static final ZoneId NIGHT_ZONE = ZoneId.of("Asia/Taipei");
+    static final int NIGHT_END_HOUR = 5;                   // 00:00–05:00
     static final long SNOOZE_MS = 10 * 60_000L;
     static final long NIGHT_SNOOZE_MS = 5 * 60_000L;
     static final long EMERGENCY_MS = 10 * 60_000L;
@@ -370,7 +374,9 @@ public final class CollectorService extends Service {
                 }
                 if (executor != null) executor.execute(() -> {
                     saveSnapshot(action);
-                    if (Intent.ACTION_SCREEN_ON.equals(action) || Intent.ACTION_USER_PRESENT.equals(action)) {
+                    if (Intent.ACTION_USER_PRESENT.equals(action)) {
+                        checkContinuousUsage(true);
+                    } else if (Intent.ACTION_SCREEN_ON.equals(action)) {
                         checkContinuousUsage();
                     }
                 });
@@ -380,6 +386,11 @@ public final class CollectorService extends Service {
     }
 
     private void checkContinuousUsage() {
+        checkContinuousUsage(false);
+    }
+
+    /** @param unlocked 刚解锁手机；深夜时段解锁会立即提醒。 */
+    private void checkContinuousUsage(boolean unlocked) {
         long now = SystemClock.elapsedRealtime();
         long usageLimitMs = getUsageLimitMinutes(this) * 60_000L;
         SharedPreferences prefs = getSharedPreferences(PREFS_USAGE_REMINDER, MODE_PRIVATE);
@@ -431,8 +442,6 @@ public final class CollectorService extends Service {
                         .putLong(KEY_USAGE_NEXT_ALERT_ELAPSED, nextAlert)
                         .putLong(KEY_USAGE_LAST_CHECK_ELAPSED, now)
                         .remove(KEY_USAGE_INACTIVE_SINCE_ELAPSED);
-                long nightAnchor = prefs.getLong(KEY_NIGHT_ANCHOR_ELAPSED, 0);
-                if (nightAnchor > 0) editor.putLong(KEY_NIGHT_ANCHOR_ELAPSED, nightAnchor + pausedDuration);
                 editor.apply();
             }
         }
@@ -449,7 +458,7 @@ public final class CollectorService extends Service {
                     .putLong(KEY_USAGE_LAST_CHECK_ELAPSED, now)
                     .remove(KEY_USAGE_INACTIVE_SINCE_ELAPSED)
                     .apply();
-            return;
+            if (!isNightNow(this)) return;  // 深夜新一轮使用也要立即提醒
         }
 
         prefs.edit().putLong(KEY_USAGE_LAST_CHECK_ELAPSED, now).apply();
@@ -474,8 +483,11 @@ public final class CollectorService extends Service {
         long deadline = nextAlert;
         boolean night = isNightNow(this);
         if (night) {
-            long anchor = Math.max(start, prefs.getLong(KEY_NIGHT_ANCHOR_ELAPSED, 0));
-            deadline = Math.min(deadline, anchor + NIGHT_LIMIT_MS);
+            // 深夜：每次解锁立即提醒；跨过 0 点仍在使用时，本夜还没提醒过也立即提醒。
+            long nightStartElapsed = now - millisSinceNightStart();
+            if (unlocked || prefs.getLong(KEY_LAST_ALERT_ELAPSED, 0) < nightStartElapsed) {
+                deadline = now;
+            }
         }
         if (now >= deadline) {
             fireContinuousUsageAlert(prefs, now, usageLimitMs, night);
@@ -493,7 +505,6 @@ public final class CollectorService extends Service {
                 .putLong(KEY_LOCK_UNTIL_ELAPSED, now + lockSeconds(level, night) * 1000L)
                 .putLong(KEY_LAST_ALERT_ELAPSED, now)
                 .putLong(KEY_USAGE_NEXT_ALERT_ELAPSED, now + usageLimitMs)
-                .putLong(KEY_NIGHT_ANCHOR_ELAPSED, now)
                 .apply();
         saveSnapshot(night ? EVENT_NIGHT_ALERT : EVENT_ALERT, level, null);
         showContinuousUsageAlert(false);
@@ -512,9 +523,13 @@ public final class CollectorService extends Service {
 
     static boolean isNightNow(Context context) {
         if (!isNightModeEnabled(context)) return false;
-        LocalTime time = LocalTime.now();
-        int minuteOfDay = time.getHour() * 60 + time.getMinute();
-        return minuteOfDay >= NIGHT_START_MINUTE_OF_DAY && minuteOfDay < NIGHT_END_MINUTE_OF_DAY;
+        return LocalTime.now(NIGHT_ZONE).getHour() < NIGHT_END_HOUR;
+    }
+
+    /** 深夜时段从台北时间当天 0 点开始，返回距今的毫秒数。 */
+    private static long millisSinceNightStart() {
+        ZonedDateTime now = ZonedDateTime.now(NIGHT_ZONE);
+        return Duration.between(now.toLocalDate().atStartOfDay(NIGHT_ZONE), now).toMillis();
     }
 
     private void handleUsageAlertResponse(String response) {
@@ -526,8 +541,7 @@ public final class CollectorService extends Service {
         }
         boolean night = isNightNow(this);
         SharedPreferences.Editor editor = prefs.edit()
-                .putBoolean(KEY_ALERT_PENDING, false)
-                .putLong(KEY_NIGHT_ANCHOR_ELAPSED, now);
+                .putBoolean(KEY_ALERT_PENDING, false);
         switch (response) {
             case RESPONSE_REST:
                 editor.putLong(KEY_REST_UNTIL_ELAPSED, now + REST_MS);
@@ -623,7 +637,7 @@ public final class CollectorService extends Service {
                 KEY_USAGE_START_ELAPSED, KEY_USAGE_NEXT_ALERT_ELAPSED, KEY_USAGE_LAST_CHECK_ELAPSED,
                 KEY_USAGE_INACTIVE_SINCE_ELAPSED, KEY_ALERT_LEVEL, KEY_ALERT_PENDING,
                 KEY_LOCK_UNTIL_ELAPSED, KEY_REST_UNTIL_ELAPSED, KEY_SNOOZE_USED,
-                KEY_LAST_ALERT_ELAPSED, KEY_NIGHT_ANCHOR_ELAPSED,
+                KEY_LAST_ALERT_ELAPSED, KEY_NIGHT_ANCHOR_ELAPSED_LEGACY,
         };
         SharedPreferences.Editor editor = null;
         for (String key : sessionKeys) {
@@ -769,13 +783,14 @@ public final class CollectorService extends Service {
                     .append(" 分钟后会出现的提醒。测试时点任意按钮都只会关闭弹窗。");
             return text.toString();
         }
-        text.append("你已经连续使用手机约 ").append(usedMinutes).append(" 分钟");
-        if (appLabel != null) text.append("\n正在用：").append(appLabel);
         if (night) {
-            LocalTime time = LocalTime.now();
-            text.append(String.format(Locale.getDefault(), "\n\n现在是 %02d:%02d。", time.getHour(), time.getMinute()))
-                    .append("深夜模式下每 15 分钟提醒一次，放下手机去睡吧。");
+            LocalTime time = LocalTime.now(NIGHT_ZONE);
+            text.append(String.format(Locale.getDefault(), "现在是 %02d:%02d。", time.getHour(), time.getMinute()))
+                    .append("\n0:00–5:00 每次解锁都会提醒，放下手机去睡吧。");
+            if (appLabel != null) text.append("\n\n正在用：").append(appLabel);
         } else {
+            text.append("你已经连续使用手机约 ").append(usedMinutes).append(" 分钟");
+            if (appLabel != null) text.append("\n正在用：").append(appLabel);
             text.append("\n\n放下手机、看看远处，离开几分钟。");
         }
         if (level > 1) text.append("\n\n这是本轮第 ").append(level).append(" 次提醒。");
