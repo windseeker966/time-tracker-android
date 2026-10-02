@@ -20,7 +20,7 @@ import java.util.Locale;
 
 final class DatabaseHelper extends SQLiteOpenHelper {
     private static final String DB_NAME = "time_tracker.db";
-    private static final int DB_VERSION = 5;
+    private static final int DB_VERSION = 6;
 
     DatabaseHelper(Context context) {
         super(context, DB_NAME, null, DB_VERSION);
@@ -48,7 +48,13 @@ final class DatabaseHelper extends SQLiteOpenHelper {
                 "usage_reminder_limit_min INTEGER," +
                 "continuous_usage_state TEXT," +
                 "usage_alert_level INTEGER," +
-                "usage_alert_response TEXT)");
+                "usage_alert_response TEXT," +
+                "alarm_id INTEGER," +
+                "alarm_ring_sec INTEGER," +
+                "alarm_progress INTEGER," +
+                "alarm_wrong_count INTEGER," +
+                "alarm_emergency_count INTEGER," +
+                "alarm_detail TEXT)");
         db.execSQL("CREATE INDEX idx_raw_events_timestamp ON raw_events(timestamp_ms)");
     }
 
@@ -74,6 +80,14 @@ final class DatabaseHelper extends SQLiteOpenHelper {
             db.execSQL("ALTER TABLE raw_events ADD COLUMN usage_alert_level INTEGER");
             db.execSQL("ALTER TABLE raw_events ADD COLUMN usage_alert_response TEXT");
         }
+        if (oldVersion < 6) {
+            db.execSQL("ALTER TABLE raw_events ADD COLUMN alarm_id INTEGER");
+            db.execSQL("ALTER TABLE raw_events ADD COLUMN alarm_ring_sec INTEGER");
+            db.execSQL("ALTER TABLE raw_events ADD COLUMN alarm_progress INTEGER");
+            db.execSQL("ALTER TABLE raw_events ADD COLUMN alarm_wrong_count INTEGER");
+            db.execSQL("ALTER TABLE raw_events ADD COLUMN alarm_emergency_count INTEGER");
+            db.execSQL("ALTER TABLE raw_events ADD COLUMN alarm_detail TEXT");
+        }
     }
 
     long insertSnapshot(String eventType, String appPackage, boolean screenOn,
@@ -83,7 +97,7 @@ final class DatabaseHelper extends SQLiteOpenHelper {
                         Integer pomodoroRemainingSec, Integer pomodoroCycle,
                         Long continuousUsageSec, Integer usageReminderLimitMin,
                         String continuousUsageState, Integer usageAlertLevel,
-                        String usageAlertResponse) {
+                        String usageAlertResponse, AlarmFields alarm) {
         ContentValues values = new ContentValues();
         values.put("timestamp_ms", System.currentTimeMillis());
         values.put("event_type", eventType);
@@ -104,6 +118,14 @@ final class DatabaseHelper extends SQLiteOpenHelper {
         values.put("continuous_usage_state", continuousUsageState);
         values.put("usage_alert_level", usageAlertLevel);
         values.put("usage_alert_response", usageAlertResponse);
+        if (alarm != null) {
+            values.put("alarm_id", alarm.alarmId);
+            values.put("alarm_ring_sec", alarm.ringSec);
+            values.put("alarm_progress", alarm.progress);
+            values.put("alarm_wrong_count", alarm.wrongCount);
+            values.put("alarm_emergency_count", alarm.emergencyCount);
+            values.put("alarm_detail", alarm.detail);
+        }
         return getWritableDatabase().insertOrThrow("raw_events", null, values);
     }
 
@@ -118,7 +140,8 @@ final class DatabaseHelper extends SQLiteOpenHelper {
         String sql = "SELECT timestamp_ms,event_type,app_package,screen_on,charging,wifi_ssid,location_label," +
                 "latitude,longitude,accuracy_m,location_provider,pomodoro_phase,pomodoro_remaining_sec,pomodoro_cycle," +
                 "continuous_usage_sec,usage_reminder_limit_min,continuous_usage_state," +
-                "usage_alert_level,usage_alert_response " +
+                "usage_alert_level,usage_alert_response," +
+                "alarm_id,alarm_ring_sec,alarm_progress,alarm_wrong_count,alarm_emergency_count,alarm_detail " +
                 "FROM raw_events ORDER BY timestamp_ms DESC LIMIT " + Math.max(1, Math.min(limit, 100));
         SimpleDateFormat format = new SimpleDateFormat("MM-dd HH:mm:ss", Locale.getDefault());
         try (Cursor cursor = getReadableDatabase().rawQuery(sql, null)) {
@@ -142,6 +165,13 @@ final class DatabaseHelper extends SQLiteOpenHelper {
                 if (!cursor.isNull(17) || !cursor.isNull(18)) {
                     result.append("\n  alert_level=").append(value(cursor, 17))
                             .append("  alert_response=").append(value(cursor, 18));
+                }
+                if (!cursor.isNull(19)) {
+                    result.append("\n  alarm_ring=").append(value(cursor, 20)).append("s")
+                            .append("  progress=").append(value(cursor, 21))
+                            .append("  wrong=").append(value(cursor, 22))
+                            .append("  emergency=").append(value(cursor, 23))
+                            .append("  detail=").append(value(cursor, 24));
                 }
                 result.append("\n\n");
             }
@@ -171,7 +201,8 @@ final class DatabaseHelper extends SQLiteOpenHelper {
                      "SELECT timestamp_ms,event_type,app_package,screen_on,charging,wifi_ssid,location_label," +
                              "latitude,longitude,accuracy_m,location_provider,pomodoro_phase,pomodoro_remaining_sec,pomodoro_cycle," +
                              "continuous_usage_sec,usage_reminder_limit_min,continuous_usage_state," +
-                             "usage_alert_level,usage_alert_response " +
+                             "usage_alert_level,usage_alert_response," +
+                             "alarm_id,alarm_ring_sec,alarm_progress,alarm_wrong_count,alarm_emergency_count,alarm_detail " +
                              "FROM raw_events WHERE timestamp_ms >= ? AND timestamp_ms < ? " +
                              "ORDER BY timestamp_ms",
                      new String[] { Long.toString(startMs), Long.toString(endMs) })) {
@@ -197,6 +228,12 @@ final class DatabaseHelper extends SQLiteOpenHelper {
                 object.put("continuous_usage_state", nullable(cursor, 16));
                 object.put("usage_alert_level", nullableNumber(cursor, 17));
                 object.put("usage_alert_response", nullable(cursor, 18));
+                object.put("alarm_id", nullableNumber(cursor, 19));
+                object.put("alarm_ring_sec", nullableNumber(cursor, 20));
+                object.put("alarm_progress", nullableNumber(cursor, 21));
+                object.put("alarm_wrong_count", nullableNumber(cursor, 22));
+                object.put("alarm_emergency_count", nullableNumber(cursor, 23));
+                object.put("alarm_detail", nullable(cursor, 24));
                 output.write((object + "\n").getBytes(StandardCharsets.UTF_8));
             }
         } catch (Exception error) {
@@ -242,6 +279,51 @@ final class DatabaseHelper extends SQLiteOpenHelper {
             }
         }
         return stats;
+    }
+
+    /** 最近一次闹钟：响铃时间、关闭时间与用时、答错次数和关闭方式。 */
+    String lastAlarmSummary() {
+        long alarmId;
+        long firedMs;
+        String firedDetail;
+        try (Cursor cursor = getReadableDatabase().rawQuery(
+                "SELECT alarm_id,timestamp_ms,alarm_detail FROM raw_events WHERE event_type = ? " +
+                        "ORDER BY timestamp_ms DESC LIMIT 1",
+                new String[] { MathAlarm.EVENT_FIRE })) {
+            if (!cursor.moveToFirst()) return "还没有响过";
+            alarmId = cursor.getLong(0);
+            firedMs = cursor.getLong(1);
+            firedDetail = cursor.isNull(2) ? null : cursor.getString(2);
+        }
+        SimpleDateFormat format = new SimpleDateFormat("MM-dd HH:mm", Locale.getDefault());
+        StringBuilder text = new StringBuilder("最近一次")
+                .append("test".equals(firedDetail) ? "（测试）" : "")
+                .append("：").append(format.format(new Date(firedMs))).append(" 响");
+        try (Cursor cursor = getReadableDatabase().rawQuery(
+                "SELECT timestamp_ms,alarm_ring_sec,alarm_wrong_count,alarm_emergency_count FROM raw_events " +
+                        "WHERE event_type = ? AND alarm_id = ? AND timestamp_ms >= ? " +
+                        "ORDER BY timestamp_ms LIMIT 1",
+                new String[] { MathAlarm.EVENT_DISMISSED, Long.toString(alarmId), Long.toString(firedMs) })) {
+            if (!cursor.moveToFirst()) return text.append("，尚未关闭").toString();
+            long ringSec = cursor.getLong(1);
+            text.append("，").append(new SimpleDateFormat("HH:mm", Locale.getDefault())
+                            .format(new Date(cursor.getLong(0)))).append(" 关闭")
+                    .append(String.format(Locale.getDefault(), "\n  用时 %d 分 %02d 秒", ringSec / 60, ringSec % 60))
+                    .append(" · 答错 ").append(cursor.getInt(2)).append(" 次")
+                    .append(cursor.getInt(3) > 0 ? " · 紧急使用关闭" : " · 答题关闭");
+        }
+        return text.toString();
+    }
+
+    /** 闹钟相关事件的附加字段，非闹钟事件为 null。 */
+    static final class AlarmFields {
+        Long alarmId;
+        Long ringSec;
+        /** 当前这组题已连续答对的数量。 */
+        Integer progress;
+        Integer wrongCount;
+        Integer emergencyCount;
+        String detail;
     }
 
     static final class AlertStats {

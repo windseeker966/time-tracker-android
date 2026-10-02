@@ -60,6 +60,12 @@ COLUMNS = [
     "continuous_usage_state",
     "usage_alert_level",
     "usage_alert_response",
+    "alarm_id",
+    "alarm_ring_sec",
+    "alarm_progress",
+    "alarm_wrong_count",
+    "alarm_emergency_count",
+    "alarm_detail",
 ]
 
 WIDTHS = {
@@ -83,6 +89,12 @@ WIDTHS = {
     "continuous_usage_state": 1.65,
     "usage_alert_level": 1.35,
     "usage_alert_response": 1.65,
+    "alarm_id": 1.45,
+    "alarm_ring_sec": 1.35,
+    "alarm_progress": 1.35,
+    "alarm_wrong_count": 1.45,
+    "alarm_emergency_count": 1.65,
+    "alarm_detail": 2.25,
 }
 
 
@@ -439,6 +451,13 @@ def write_fods(jsonl_path: Path, fods_path: Path, expected_rows: int) -> int:
                 output.write(cell_string(item.get("continuous_usage_state")))
                 output.write(cell_number(item.get("usage_alert_level"), "Integer"))
                 output.write(cell_string(item.get("usage_alert_response")))
+                alarm_id = item.get("alarm_id")
+                output.write(cell_string(None if alarm_id is None else str(int(alarm_id))))
+                output.write(cell_number(item.get("alarm_ring_sec"), "Integer"))
+                output.write(cell_number(item.get("alarm_progress"), "Integer"))
+                output.write(cell_number(item.get("alarm_wrong_count"), "Integer"))
+                output.write(cell_number(item.get("alarm_emergency_count"), "Integer"))
+                output.write(cell_string(item.get("alarm_detail")))
                 output.write("</table:table-row>\n")
                 rows += 1
 

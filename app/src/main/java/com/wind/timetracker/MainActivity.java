@@ -3,6 +3,7 @@ package com.wind.timetracker;
 import android.Manifest;
 import android.app.Activity;
 import android.app.AppOpsManager;
+import android.app.TimePickerDialog;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
@@ -43,6 +44,8 @@ public final class MainActivity extends Activity {
     private Button testUsageReminderButton;
     private Button nightModeButton;
     private TextView alertStatsView;
+    private TextView alarmStatusView;
+    private Button alarmToggleButton;
     private TextView eventsView;
     private final Handler uiHandler = new Handler(Looper.getMainLooper());
     private final Runnable pomodoroTicker = new Runnable() {
@@ -66,6 +69,9 @@ public final class MainActivity extends Activity {
         super.onResume();
         refreshStatus();
         refreshNightModeButton();
+        // 应用被强行停止后系统闹钟会被清除，打开应用时重新注册。
+        AlarmScheduler.schedule(this);
+        refreshAlarmStatus();
         uiHandler.removeCallbacks(pomodoroTicker);
         uiHandler.post(pomodoroTicker);
     }
@@ -147,6 +153,24 @@ public final class MainActivity extends Activity {
         root.addView(button("授予“显示在其他应用上层”权限", v -> openOverlaySettings()), fullWidth());
         testUsageReminderButton = button("测试提醒弹窗", v -> testUsageReminder());
         root.addView(testUsageReminderButton, fullWidth());
+
+        TextView alarmTitle = sectionTitle("数学闹钟");
+        root.addView(alarmTitle, fullWidth());
+        TextView alarmDescription = new TextView(this);
+        alarmDescription.setText("每天定时响铃。解锁后全屏遮挡，必须连续答对 " + AlarmScheduler.QUESTION_COUNT +
+                " 道算术题才会停止响铃，答错一道换一组新题从头再来。长按“紧急使用”直接关闭闹钟（会被记录）。需要悬浮窗权限。");
+        alarmDescription.setTextSize(15);
+        alarmDescription.setPadding(dp(12), dp(8), dp(12), dp(8));
+        root.addView(alarmDescription, fullWidth());
+        alarmStatusView = new TextView(this);
+        alarmStatusView.setTextSize(16);
+        alarmStatusView.setPadding(dp(12), dp(10), dp(12), dp(10));
+        alarmStatusView.setBackgroundColor(Color.rgb(232, 238, 248));
+        root.addView(alarmStatusView, fullWidth());
+        root.addView(button("设置闹钟时间", v -> pickAlarmTime()), fullWidth());
+        alarmToggleButton = button("", v -> toggleAlarm());
+        root.addView(alarmToggleButton, fullWidth());
+        root.addView(button("测试闹钟（1 分钟后响）", v -> testAlarm()), fullWidth());
 
         TextView pomodoroTitle = sectionTitle("番茄钟");
         root.addView(pomodoroTitle, fullWidth());
@@ -318,6 +342,66 @@ public final class MainActivity extends Activity {
                 " · 正事 " + stats.work + " · 紧急 " + stats.emergency;
     }
 
+    private void pickAlarmTime() {
+        new TimePickerDialog(this, (picker, hour, minute) -> {
+            AlarmScheduler.prefs(this).edit()
+                    .putInt(AlarmScheduler.KEY_HOUR, hour)
+                    .putInt(AlarmScheduler.KEY_MINUTE, minute)
+                    .putBoolean(AlarmScheduler.KEY_ENABLED, true)
+                    .apply();
+            alarmSettingsChanged();
+            toast("闹钟已设为每天 " + AlarmScheduler.formatTime(this));
+        }, AlarmScheduler.hour(this), AlarmScheduler.minute(this), true).show();
+    }
+
+    private void toggleAlarm() {
+        boolean enabled = !AlarmScheduler.isEnabled(this);
+        AlarmScheduler.prefs(this).edit().putBoolean(AlarmScheduler.KEY_ENABLED, enabled).apply();
+        alarmSettingsChanged();
+        toast(enabled ? "闹钟已开启：每天 " + AlarmScheduler.formatTime(this) : "闹钟已关闭");
+    }
+
+    private void alarmSettingsChanged() {
+        AlarmScheduler.schedule(this);
+        startForegroundService(new Intent(this, CollectorService.class)
+                .setAction(CollectorService.ACTION_ALARM_SETTINGS_CHANGED));
+        if (AlarmScheduler.isEnabled(this) && !Settings.canDrawOverlays(this)) {
+            toast("未授予悬浮窗权限：闹钟只能响铃，无法答题遮挡");
+        }
+        refreshAlarmStatus();
+    }
+
+    private void testAlarm() {
+        if (AlarmScheduler.isRinging(this)) {
+            toast("闹钟正在响铃中");
+            return;
+        }
+        AlarmScheduler.scheduleTest(this);
+        toast("测试闹钟将在 1 分钟后响，可以先锁屏");
+        refreshAlarmStatus();
+    }
+
+    private void refreshAlarmStatus() {
+        if (alarmStatusView == null) return;
+        String time = AlarmScheduler.formatTime(this);
+        StringBuilder text = new StringBuilder();
+        if (AlarmScheduler.isRinging(this)) text.append("正在响铃\n");
+        if (AlarmScheduler.isEnabled(this)) {
+            text.append("已开启 · 每天 ").append(time).append("\n下次响铃：")
+                    .append(new java.text.SimpleDateFormat("MM-dd HH:mm", java.util.Locale.getDefault())
+                            .format(new java.util.Date(AlarmScheduler.nextTriggerMs(this))));
+        } else {
+            text.append("已关闭 · 时间 ").append(time);
+        }
+        if (!AlarmScheduler.canScheduleExact(this)) text.append("\n⚠ 未获得精确闹钟权限，可能延迟");
+        if (!Settings.canDrawOverlays(this)) text.append("\n⚠ 未授予悬浮窗权限，无法答题遮挡");
+        try (DatabaseHelper database = new DatabaseHelper(this)) {
+            text.append("\n").append(database.lastAlarmSummary());
+        }
+        alarmStatusView.setText(text);
+        alarmToggleButton.setText(AlarmScheduler.isEnabled(this) ? "关闭闹钟" : "开启闹钟");
+    }
+
     private void startCollector() {
         Intent intent = new Intent(this, CollectorService.class);
         startForegroundService(intent);
@@ -326,6 +410,10 @@ public final class MainActivity extends Activity {
     }
 
     private void stopCollector() {
+        if (AlarmScheduler.isRinging(this)) {
+            toast("闹钟响铃中，答完题才能停止采集服务");
+            return;
+        }
         stopService(new Intent(this, CollectorService.class));
         toast("采集服务已停止");
     }

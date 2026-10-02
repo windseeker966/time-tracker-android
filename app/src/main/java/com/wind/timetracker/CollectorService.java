@@ -56,6 +56,9 @@ public final class CollectorService extends Service {
     static final String ACTION_TEST_USAGE_REMINDER = "com.wind.timetracker.TEST_USAGE_REMINDER";
     static final String ACTION_USAGE_REMINDER_SETTINGS_CHANGED =
             "com.wind.timetracker.USAGE_REMINDER_SETTINGS_CHANGED";
+    static final String ACTION_ALARM_FIRE = "com.wind.timetracker.ALARM_FIRE";
+    static final String ACTION_ALARM_STOP_NO_OVERLAY = "com.wind.timetracker.ALARM_STOP_NO_OVERLAY";
+    static final String ACTION_ALARM_SETTINGS_CHANGED = "com.wind.timetracker.ALARM_SETTINGS_CHANGED";
     static final String PREFS_POMODORO = "pomodoro";
     static final String KEY_POMODORO_PHASE = "phase";
     static final String KEY_POMODORO_END_MS = "end_ms";
@@ -133,6 +136,7 @@ public final class CollectorService extends Service {
     private Button overlayEmergencyButton;
     private final List<Button> overlayChoiceButtons = new ArrayList<>();
     private final Runnable overlayTicker = this::tickUsageReminderOverlay;
+    private MathAlarm mathAlarm;  // 只在主线程使用
 
     @Override
     public void onCreate() {
@@ -146,11 +150,22 @@ public final class CollectorService extends Service {
         executor.scheduleWithFixedDelay(() -> saveSnapshot("sample"), 0, 30, TimeUnit.SECONDS);
         executor.scheduleWithFixedDelay(this::checkPomodoroTransition, 0, 1, TimeUnit.SECONDS);
         executor.scheduleWithFixedDelay(this::checkContinuousUsage, 0, 5, TimeUnit.SECONDS);
+        mathAlarm = new MathAlarm(this, (eventType, fields) -> {
+            try {
+                executor.execute(() -> saveSnapshot(eventType, null, null, fields));
+            } catch (RuntimeException ignored) { }
+        });
+        // 服务重启（包括手机重启）时，如果闹钟还没答题关闭，会继续响。
+        executor.scheduleWithFixedDelay(() -> mainHandler.post(mathAlarm::refresh), 0, 5, TimeUnit.SECONDS);
     }
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
         if (intent != null && ACTION_STOP.equals(intent.getAction())) {
+            if (AlarmScheduler.isRinging(this)) {
+                Toast.makeText(this, "闹钟响铃中，答完题才能停止采集服务", Toast.LENGTH_LONG).show();
+                return START_STICKY;
+            }
             stopSelf();
             return START_NOT_STICKY;
         }
@@ -165,6 +180,19 @@ public final class CollectorService extends Service {
             });
         } else if (intent != null && ACTION_USAGE_REMINDER_SETTINGS_CHANGED.equals(intent.getAction())) {
             if (executor != null) executor.execute(this::rescheduleContinuousUsageAlert);
+        } else if (intent != null && ACTION_ALARM_FIRE.equals(intent.getAction())) {
+            long alarmId = intent.getLongExtra(AlarmScheduler.EXTRA_ALARM_ID, System.currentTimeMillis());
+            boolean test = intent.getBooleanExtra(AlarmScheduler.EXTRA_TEST, false);
+            mainHandler.post(() -> mathAlarm.fire(alarmId, test));
+        } else if (intent != null && ACTION_ALARM_STOP_NO_OVERLAY.equals(intent.getAction())) {
+            mainHandler.post(mathAlarm::dismissWithoutOverlay);
+        } else if (intent != null && ACTION_ALARM_SETTINGS_CHANGED.equals(intent.getAction())) {
+            AlarmScheduler.schedule(this);
+            DatabaseHelper.AlarmFields fields = new DatabaseHelper.AlarmFields();
+            fields.alarmId = AlarmScheduler.nextTriggerMs(this);
+            fields.detail = AlarmScheduler.formatTime(this) + (AlarmScheduler.isEnabled(this) ? " on" : " off");
+            if (executor != null) executor.execute(() ->
+                    saveSnapshot(MathAlarm.EVENT_SETTINGS, null, null, fields));
         } else if (intent != null && ACTION_USAGE_ALERT_RESPONSE.equals(intent.getAction())) {
             String response = intent.getStringExtra(EXTRA_USAGE_ALERT_RESPONSE);
             getSystemService(NotificationManager.class).cancel(USAGE_REMINDER_NOTIFICATION_ID);
@@ -241,6 +269,15 @@ public final class CollectorService extends Service {
         usageReminder.setDescription("连续使用手机达到设定时长时提醒休息");
         usageReminder.enableVibration(true);
         manager.createNotificationChannel(usageReminder);
+
+        // 铃声和振动由 MathAlarm 自己播放，通知本身保持静音。
+        NotificationChannel alarm = new NotificationChannel(MathAlarm.CHANNEL_ID,
+                "数学闹钟", NotificationManager.IMPORTANCE_HIGH);
+        alarm.setDescription("闹钟响铃中，解锁后答题关闭");
+        alarm.setSound(null, null);
+        alarm.enableVibration(false);
+        alarm.setLockscreenVisibility(Notification.VISIBILITY_PUBLIC);
+        manager.createNotificationChannel(alarm);
     }
 
     private void startPomodoro() {
@@ -327,6 +364,9 @@ public final class CollectorService extends Service {
                 String action = intent == null ? "state_change" : intent.getAction();
                 if (Intent.ACTION_SCREEN_OFF.equals(action)) {
                     markContinuousUsageInactive();
+                }
+                if (Intent.ACTION_SCREEN_ON.equals(action) || Intent.ACTION_USER_PRESENT.equals(action)) {
+                    mainHandler.post(mathAlarm::refresh);
                 }
                 if (executor != null) executor.execute(() -> {
                     saveSnapshot(action);
@@ -709,6 +749,7 @@ public final class CollectorService extends Service {
                 WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
                 PixelFormat.TRANSLUCENT);
         params.gravity = Gravity.CENTER;
+        coverSystemBars(params);
         try {
             WindowManager windowManager = (WindowManager) getSystemService(WINDOW_SERVICE);
             windowManager.addView(root, params);
@@ -782,6 +823,17 @@ public final class CollectorService extends Service {
             overlayCountdownView.setText("先放下手机 " + ((remaining + 999) / 1000) + " 秒，之后才能选择");
         }
         mainHandler.postDelayed(overlayTicker, 1000);
+    }
+
+    /** 默认悬浮窗会避开状态栏和导航栏，留出的缝隙可以点到下层应用；让它铺满整个屏幕。 */
+    static void coverSystemBars(WindowManager.LayoutParams params) {
+        params.flags |= WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS;
+        if (Build.VERSION.SDK_INT >= 28) {
+            params.layoutInDisplayCutoutMode = Build.VERSION.SDK_INT >= 30
+                    ? WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
+                    : WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES;
+        }
+        if (Build.VERSION.SDK_INT >= 30) params.setFitInsetsTypes(0);
     }
 
     private LinearLayout.LayoutParams overlayFullWidth() {
@@ -910,6 +962,11 @@ public final class CollectorService extends Service {
     }
 
     private void saveSnapshot(String eventType, Integer alertLevel, String alertResponse) {
+        saveSnapshot(eventType, alertLevel, alertResponse, null);
+    }
+
+    private void saveSnapshot(String eventType, Integer alertLevel, String alertResponse,
+                              DatabaseHelper.AlarmFields alarm) {
         try {
             Location location = latestLocation == null ? null : new Location(latestLocation);
             PomodoroSnapshot pomodoro = currentPomodoroSnapshot();
@@ -922,7 +979,7 @@ public final class CollectorService extends Service {
                     location == null ? null : location.getProvider(),
                     pomodoro.phase, pomodoro.remainingSec, pomodoro.cycle,
                     continuousUsage.elapsedSec, continuousUsage.limitMinutes,
-                    continuousUsage.state, alertLevel, alertResponse);
+                    continuousUsage.state, alertLevel, alertResponse, alarm);
         } catch (RuntimeException ignored) {
             // The next scheduled sample retries. The service must remain alive.
         }
@@ -1056,6 +1113,7 @@ public final class CollectorService extends Service {
         if (locationManager != null && locationListener != null) locationManager.removeUpdates(locationListener);
         resetContinuousUsageSession();
         removeUsageReminderOverlay();
+        if (mathAlarm != null) mathAlarm.release();
         if (database != null) database.close();
         super.onDestroy();
     }
