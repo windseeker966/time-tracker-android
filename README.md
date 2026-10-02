@@ -1,0 +1,96 @@
+# 本地时间采集 Android 服务
+
+这是 `time-tracking-full-plan.md` 中 Android 采集端的本地优先实现。
+
+## 当前功能
+
+- 每 30 秒记录一次前台应用包名、屏幕状态、充电状态、Wi-Fi SSID 和位置标签。
+- 屏幕亮灭及充电连接/断开时额外记录事件。
+- 定位会保存原始经纬度、系统报告的精度（米）、定位来源，以及“在家 / 在校 / 在食堂 / 在图书馆 / 在外 / 未配置”标签。
+- SQLite 默认位于应用私有目录 `databases/time_tracker.db`。
+- 可从应用界面按今天、本周、本月或全部导出 JSONL 到手机 `下载/TimeTracker/`。
+- 支持家（250 米）、学校（250 米）、食堂（120 米）和图书馆（120 米）位置标签；食堂和图书馆优先于学校匹配。
+- 前台服务、开机广播、Android 16 权限模型。
+- 连续使用提醒默认 40 分钟，可在应用内调整为 1–240 分钟；主界面实时显示本次连续使用时长。熄屏或锁屏不足 5 分钟时暂停，恢复后继续；满 5 分钟则清零并在下次使用时重新计时。
+- 提醒弹窗需要做出选择：休息 5 分钟（倒计时遮挡）、再用 10 分钟（每轮一次）、在做正事，或长按“紧急使用”；熄屏再亮屏不会绕过未选择的弹窗。同一轮继续使用时逐级升级：第 2 次提醒需先等待 60 秒才能选择，之后每次 180 秒。
+- 深夜模式（默认开启，00:30–06:00）：阈值降为 15 分钟，“再用”缩短为 5 分钟，每次提醒至少等待 60 秒，文案改为“该睡了”。
+- 每次提醒、选择和结果都会写入数据库；主界面显示今天和近 7 天的提醒次数、各选项次数，以及提醒后 15 分钟内真正休息（熄屏满 5 分钟或完成休息倒计时）的次数。
+- 后台恢复需要“始终允许”定位；若权限缺失，服务会安全降级并继续采集非定位信号，不会崩溃。
+- Manifest 未申请 `INTERNET` 权限，当前版本不能上传数据，但导出的 JSONL 包含完整位置历史，应妥善保管。
+
+## 从 Mac 导出 Excel
+
+双击 `export.command`，或在终端运行：
+
+```bash
+cd /Users/wind/vscode/time-tracker-android
+./export.command
+```
+
+脚本通过无线 ADB 请求应用安全查询 SQLite，再使用 LibreOffice 生成格式化的 Excel 工作簿。默认输出目录为 `/Users/wind/vscode/时间记录分析/Android`。启动后可选择今天、本周、本月或所有记录；直接回车默认导出今天。
+
+ADB 设备默认使用 `auto`：依次复用已连接设备、查询 ADB mDNS 服务，再尝试室内 Wi-Fi 与手机热点的已知地址。切换网络后通常不需要修改命令。失效地址使用短超时，不会等待约 30 秒。
+
+非交互调用：
+
+```bash
+./export.command --period day
+./export.command --period week
+./export.command --period month
+./export.command --period all
+./export.command --from "2026-08-27 18:00:00" --to "2026-08-28 08:00:00"
+```
+
+如自动发现失败，可显式指定地址，或提供多个候选地址：
+
+```bash
+./export.command --serial 192.168.80.148:5555 --period day
+TIME_TRACKER_ADB_SERIALS="192.168.80.148:5555,10.149.84.166:5555" ./export.command --period day
+```
+
+开始时间包含在结果中，结束时间不包含；所有未带时区的输入均按 UTC+8 解释。可用 `--output` 指定文件，已有文件默认不会覆盖，添加 `--force` 后旧文件会移到 macOS 废纸篓。
+
+## 手机端首次设置
+
+1. 授予通知和精确定位权限。
+2. 打开后台定位设置，将位置信息设为“始终允许”。
+3. 在“使用情况访问”中允许“本地时间采集”。
+4. 点击“启动采集服务”。
+5. 可选：在家和学校分别点击对应的当前位置按钮。
+6. Xiaomi/HyperOS 建议将应用电池策略设为“不限制”，并允许自启动。
+
+## 构建
+
+```shell
+./gradlew assembleDebug lintDebug
+```
+
+APK：`app/build/outputs/apk/debug/app-debug.apk`
+
+## 事件表
+
+`raw_events` 字段：
+
+- `timestamp_ms`
+- `event_type`
+- `app_package`
+- `screen_on`
+- `charging`
+- `wifi_ssid`
+- `location_label`
+- `latitude`
+- `longitude`
+- `accuracy_m`
+- `location_provider`
+- `pomodoro_phase`
+- `pomodoro_remaining_sec`
+- `pomodoro_cycle`
+- `continuous_usage_sec`：该条事件产生时，本轮已连续使用的秒数。
+- `usage_reminder_limit_min`：该条事件产生时配置的提醒阈值（分钟）。
+- `continuous_usage_state`：`active`、`inactive_grace` 或 `idle`。
+- `usage_alert_level`：提醒相关事件所在的本轮提醒级别（第几次提醒）。
+- `usage_alert_response`：`event_type=usage_alert_response` 时的选择或结果：`rest`、`snooze`、`work`、`emergency`、`rest_completed`、`break_after_alert`。
+
+提醒事件类型：`continuous_use_alert`（普通）、`continuous_use_night_alert`（深夜模式）、`usage_alert_response`（选择与结果）。
+
+下一阶段可在 Mac 端读取导出的 JSONL，执行分类、时间块合并和每日回顾。

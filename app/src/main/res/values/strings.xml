@@ -1,0 +1,9 @@
+<resources>
+    <string name="app_name">本地时间采集</string>
+    <string name="notification_channel">时间采集服务</string>
+    <string name="notification_text">正在将设备状态保存在本机</string>
+    <string name="usage_reminder_channel">连续使用提醒</string>
+    <string name="usage_limit_label">提醒间隔（分钟，1–240）</string>
+    <string name="continuous_usage_status">已连续使用：%1$s\n提醒间隔：%2$d 分钟 · 熄屏满 5 分钟重新计时</string>
+    <string name="test_usage_reminder_button">测试 %1$d 分钟提醒弹窗</string>
+</resources>
