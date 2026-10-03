@@ -66,6 +66,7 @@ COLUMNS = [
     "alarm_wrong_count",
     "alarm_emergency_count",
     "alarm_detail",
+    "step_count",
 ]
 
 WIDTHS = {
@@ -95,6 +96,7 @@ WIDTHS = {
     "alarm_wrong_count": 1.45,
     "alarm_emergency_count": 1.65,
     "alarm_detail": 2.25,
+    "step_count": 1.25,
 }
 
 
@@ -385,6 +387,15 @@ def cell_date(timestamp_ms: int) -> str:
     return f'<table:table-cell table:style-name="DateCell" office:value-type="date" office:date-value="{iso}"><text:p>{display}</text:p></table:table-cell>'
 
 
+def column_letter(index: int) -> str:
+    """1 -> A, 26 -> Z, 27 -> AA。"""
+    letters = ""
+    while index > 0:
+        index, remainder = divmod(index - 1, 26)
+        letters = chr(ord("A") + remainder) + letters
+    return letters
+
+
 def write_fods(jsonl_path: Path, fods_path: Path, expected_rows: int) -> int:
     column_styles = "".join(
         f'<style:style style:name="Col{index}" style:family="table-column"><style:table-column-properties style:column-width="{WIDTHS[name]}in"/></style:style>'
@@ -458,11 +469,12 @@ def write_fods(jsonl_path: Path, fods_path: Path, expected_rows: int) -> int:
                 output.write(cell_number(item.get("alarm_wrong_count"), "Integer"))
                 output.write(cell_number(item.get("alarm_emergency_count"), "Integer"))
                 output.write(cell_string(item.get("alarm_detail")))
+                output.write(cell_number(item.get("step_count"), "Integer"))
                 output.write("</table:table-row>\n")
                 rows += 1
 
         last_row = rows + 1
-        last_column = chr(ord("A") + len(COLUMNS) - 1)
+        last_column = column_letter(len(COLUMNS))
         output.write(f'''</table:table>
 <table:database-ranges><table:database-range table:name="__Anonymous_Sheet_DB__0" table:target-range-address="raw_events.A1:raw_events.{last_column}{last_row}" table:display-filter-buttons="true"/></table:database-ranges>
 </office:spreadsheet></office:body></office:document>''')

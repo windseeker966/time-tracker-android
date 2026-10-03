@@ -108,7 +108,7 @@ public final class MainActivity extends Activity {
         statusView.setPadding(dp(12), dp(12), dp(12), dp(12));
         root.addView(statusView, fullWidth());
 
-        root.addView(button("1. 授予通知与定位权限", v -> requestRuntimePermissions()), fullWidth());
+        root.addView(button("1. 授予通知、定位与计步权限", v -> requestRuntimePermissions()), fullWidth());
         root.addView(button("1b. 授予后台定位（选择“始终允许”）", v -> openBackgroundLocationSettings()), fullWidth());
         root.addView(button("2. 打开“使用情况访问”设置", v -> openUsageAccess()), fullWidth());
         root.addView(button("3. 启动采集服务", v -> startCollector()), fullWidth());
@@ -242,7 +242,9 @@ public final class MainActivity extends Activity {
         if (Build.VERSION.SDK_INT >= 33 &&
                 checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED)
             permissions.add(Manifest.permission.POST_NOTIFICATIONS);
-        if (permissions.isEmpty()) toast("通知与定位权限已经授予");
+        if (checkSelfPermission(Manifest.permission.ACTIVITY_RECOGNITION) != PackageManager.PERMISSION_GRANTED)
+            permissions.add(Manifest.permission.ACTIVITY_RECOGNITION);
+        if (permissions.isEmpty()) toast("通知、定位与计步权限已经授予");
         else requestPermissions(permissions.toArray(new String[0]), REQUEST_PERMISSIONS);
     }
 
@@ -546,6 +548,8 @@ public final class MainActivity extends Activity {
                 checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED;
         boolean backgroundLocation = checkSelfPermission(Manifest.permission.ACCESS_BACKGROUND_LOCATION)
                 == PackageManager.PERMISSION_GRANTED;
+        boolean steps = checkSelfPermission(Manifest.permission.ACTIVITY_RECOGNITION)
+                == PackageManager.PERMISSION_GRANTED;
         boolean overlay = Settings.canDrawOverlays(this);
         int usageLimitMinutes = CollectorService.getUsageLimitMinutes(this);
         SharedPreferences places = getSharedPreferences("places", MODE_PRIVATE);
@@ -554,6 +558,7 @@ public final class MainActivity extends Activity {
                     "\n定位权限：" + yesNo(location) +
                     "\n后台定位：" + yesNo(backgroundLocation) +
                     "\n通知权限：" + yesNo(notification) +
+                    "\n计步权限：" + yesNo(steps) +
                     "\n" + usageLimitMinutes + " 分钟醒目提醒：" + yesNo(overlay) +
                     "\n家位置：" + setUnset(places.getBoolean("home_set", false)) +
                     "  学校位置：" + setUnset(places.getBoolean("school_set", false)) +

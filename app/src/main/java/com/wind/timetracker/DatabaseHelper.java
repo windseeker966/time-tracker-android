@@ -20,7 +20,7 @@ import java.util.Locale;
 
 final class DatabaseHelper extends SQLiteOpenHelper {
     private static final String DB_NAME = "time_tracker.db";
-    private static final int DB_VERSION = 6;
+    private static final int DB_VERSION = 7;
 
     DatabaseHelper(Context context) {
         super(context, DB_NAME, null, DB_VERSION);
@@ -54,7 +54,8 @@ final class DatabaseHelper extends SQLiteOpenHelper {
                 "alarm_progress INTEGER," +
                 "alarm_wrong_count INTEGER," +
                 "alarm_emergency_count INTEGER," +
-                "alarm_detail TEXT)");
+                "alarm_detail TEXT," +
+                "step_count INTEGER)");
         db.execSQL("CREATE INDEX idx_raw_events_timestamp ON raw_events(timestamp_ms)");
     }
 
@@ -88,6 +89,9 @@ final class DatabaseHelper extends SQLiteOpenHelper {
             db.execSQL("ALTER TABLE raw_events ADD COLUMN alarm_emergency_count INTEGER");
             db.execSQL("ALTER TABLE raw_events ADD COLUMN alarm_detail TEXT");
         }
+        if (oldVersion < 7) {
+            db.execSQL("ALTER TABLE raw_events ADD COLUMN step_count INTEGER");
+        }
     }
 
     long insertSnapshot(String eventType, String appPackage, boolean screenOn,
@@ -97,7 +101,7 @@ final class DatabaseHelper extends SQLiteOpenHelper {
                         Integer pomodoroRemainingSec, Integer pomodoroCycle,
                         Long continuousUsageSec, Integer usageReminderLimitMin,
                         String continuousUsageState, Integer usageAlertLevel,
-                        String usageAlertResponse, AlarmFields alarm) {
+                        String usageAlertResponse, AlarmFields alarm, Long stepCount) {
         ContentValues values = new ContentValues();
         values.put("timestamp_ms", System.currentTimeMillis());
         values.put("event_type", eventType);
@@ -118,6 +122,7 @@ final class DatabaseHelper extends SQLiteOpenHelper {
         values.put("continuous_usage_state", continuousUsageState);
         values.put("usage_alert_level", usageAlertLevel);
         values.put("usage_alert_response", usageAlertResponse);
+        values.put("step_count", stepCount);
         if (alarm != null) {
             values.put("alarm_id", alarm.alarmId);
             values.put("alarm_ring_sec", alarm.ringSec);
@@ -141,7 +146,7 @@ final class DatabaseHelper extends SQLiteOpenHelper {
                 "latitude,longitude,accuracy_m,location_provider,pomodoro_phase,pomodoro_remaining_sec,pomodoro_cycle," +
                 "continuous_usage_sec,usage_reminder_limit_min,continuous_usage_state," +
                 "usage_alert_level,usage_alert_response," +
-                "alarm_id,alarm_ring_sec,alarm_progress,alarm_wrong_count,alarm_emergency_count,alarm_detail " +
+                "alarm_id,alarm_ring_sec,alarm_progress,alarm_wrong_count,alarm_emergency_count,alarm_detail,step_count " +
                 "FROM raw_events ORDER BY timestamp_ms DESC LIMIT " + Math.max(1, Math.min(limit, 100));
         SimpleDateFormat format = new SimpleDateFormat("MM-dd HH:mm:ss", Locale.getDefault());
         try (Cursor cursor = getReadableDatabase().rawQuery(sql, null)) {
@@ -161,7 +166,8 @@ final class DatabaseHelper extends SQLiteOpenHelper {
                         .append("  cycle=").append(cursor.isNull(13) ? "-" : cursor.getInt(13))
                         .append("\n  continuous_usage=").append(cursor.isNull(14) ? "-" : cursor.getLong(14) + "s")
                         .append("  limit=").append(cursor.isNull(15) ? "-" : cursor.getInt(15) + "m")
-                        .append("  usage_state=").append(value(cursor, 16));
+                        .append("  usage_state=").append(value(cursor, 16))
+                        .append("  steps=").append(value(cursor, 25));
                 if (!cursor.isNull(17) || !cursor.isNull(18)) {
                     result.append("\n  alert_level=").append(value(cursor, 17))
                             .append("  alert_response=").append(value(cursor, 18));
@@ -202,7 +208,7 @@ final class DatabaseHelper extends SQLiteOpenHelper {
                              "latitude,longitude,accuracy_m,location_provider,pomodoro_phase,pomodoro_remaining_sec,pomodoro_cycle," +
                              "continuous_usage_sec,usage_reminder_limit_min,continuous_usage_state," +
                              "usage_alert_level,usage_alert_response," +
-                             "alarm_id,alarm_ring_sec,alarm_progress,alarm_wrong_count,alarm_emergency_count,alarm_detail " +
+                             "alarm_id,alarm_ring_sec,alarm_progress,alarm_wrong_count,alarm_emergency_count,alarm_detail,step_count " +
                              "FROM raw_events WHERE timestamp_ms >= ? AND timestamp_ms < ? " +
                              "ORDER BY timestamp_ms",
                      new String[] { Long.toString(startMs), Long.toString(endMs) })) {
@@ -234,6 +240,7 @@ final class DatabaseHelper extends SQLiteOpenHelper {
                 object.put("alarm_wrong_count", nullableNumber(cursor, 22));
                 object.put("alarm_emergency_count", nullableNumber(cursor, 23));
                 object.put("alarm_detail", nullable(cursor, 24));
+                object.put("step_count", nullableNumber(cursor, 25));
                 output.write((object + "\n").getBytes(StandardCharsets.UTF_8));
             }
         } catch (Exception error) {

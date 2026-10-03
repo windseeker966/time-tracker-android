@@ -20,6 +20,10 @@ import android.content.pm.PackageManager;
 import android.content.pm.ServiceInfo;
 import android.graphics.Color;
 import android.graphics.PixelFormat;
+import android.hardware.Sensor;
+import android.hardware.SensorEvent;
+import android.hardware.SensorEventListener;
+import android.hardware.SensorManager;
 import android.location.Location;
 import android.location.LocationListener;
 import android.location.LocationManager;
@@ -141,6 +145,9 @@ public final class CollectorService extends Service {
     private final List<Button> overlayChoiceButtons = new ArrayList<>();
     private final Runnable overlayTicker = this::tickUsageReminderOverlay;
     private MathAlarm mathAlarm;  // 只在主线程使用
+    /** 计步传感器只在主线程注册/注销；最新累计步数（开机以来），未知为 -1。 */
+    private SensorEventListener stepListener;
+    private volatile long latestStepCount = -1;
 
     @Override
     public void onCreate() {
@@ -150,8 +157,13 @@ public final class CollectorService extends Service {
         startAsForeground();
         registerStateReceiver();
         startLocationUpdatesIfAllowed();
+        startStepCounterIfAllowed();
         executor = Executors.newSingleThreadScheduledExecutor();
-        executor.scheduleWithFixedDelay(() -> saveSnapshot("sample"), 0, 30, TimeUnit.SECONDS);
+        executor.scheduleWithFixedDelay(() -> {
+            // 运行中才授予计步权限时，在下一次采样补注册。
+            if (stepListener == null) mainHandler.post(this::startStepCounterIfAllowed);
+            saveSnapshot("sample");
+        }, 0, 30, TimeUnit.SECONDS);
         executor.scheduleWithFixedDelay(this::checkPomodoroTransition, 0, 1, TimeUnit.SECONDS);
         executor.scheduleWithFixedDelay(this::checkContinuousUsage, 0, 5, TimeUnit.SECONDS);
         mathAlarm = new MathAlarm(this, (eventType, fields) -> {
@@ -994,7 +1006,8 @@ public final class CollectorService extends Service {
                     location == null ? null : location.getProvider(),
                     pomodoro.phase, pomodoro.remainingSec, pomodoro.cycle,
                     continuousUsage.elapsedSec, continuousUsage.limitMinutes,
-                    continuousUsage.state, alertLevel, alertResponse, alarm);
+                    continuousUsage.state, alertLevel, alertResponse, alarm,
+                    latestStepCount < 0 ? null : latestStepCount);
         } catch (RuntimeException ignored) {
             // The next scheduled sample retries. The service must remain alive.
         }
@@ -1102,6 +1115,36 @@ public final class CollectorService extends Service {
         }
     }
 
+    /**
+     * 系统计步传感器由低功耗协处理器计数，手机睡眠时也不会唤醒 CPU。
+     * 值是开机以来的累计步数，重启后归零；分析时用相邻记录的差值。
+     */
+    private void startStepCounterIfAllowed() {
+        if (stepListener != null) return;
+        if (checkSelfPermission(Manifest.permission.ACTIVITY_RECOGNITION) != PackageManager.PERMISSION_GRANTED) return;
+        SensorManager sensors = (SensorManager) getSystemService(SENSOR_SERVICE);
+        Sensor counter = sensors == null ? null : sensors.getDefaultSensor(Sensor.TYPE_STEP_COUNTER);
+        if (counter == null) return;
+        SensorEventListener listener = new SensorEventListener() {
+            @Override public void onSensorChanged(SensorEvent event) {
+                latestStepCount = (long) event.values[0];
+            }
+            @Override public void onAccuracyChanged(Sensor sensor, int accuracy) { }
+        };
+        // 允许传感器攒 10 秒再批量上报，减少唤醒；累计值不会因批量而丢步。
+        if (sensors.registerListener(listener, counter, SensorManager.SENSOR_DELAY_NORMAL,
+                10_000_000, mainHandler)) {
+            stepListener = listener;
+        }
+    }
+
+    private void stopStepCounter() {
+        if (stepListener == null) return;
+        SensorManager sensors = (SensorManager) getSystemService(SENSOR_SERVICE);
+        if (sensors != null) sensors.unregisterListener(stepListener);
+        stepListener = null;
+    }
+
     private boolean hasLocationPermission() {
         return checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
                 || checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED;
@@ -1126,6 +1169,7 @@ public final class CollectorService extends Service {
         if (executor != null) executor.shutdownNow();
         if (stateReceiver != null) unregisterReceiver(stateReceiver);
         if (locationManager != null && locationListener != null) locationManager.removeUpdates(locationListener);
+        stopStepCounter();
         resetContinuousUsageSession();
         removeUsageReminderOverlay();
         if (mathAlarm != null) mathAlarm.release();

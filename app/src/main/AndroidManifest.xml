@@ -23,6 +23,8 @@
     <uses-permission android:name="android.permission.USE_EXACT_ALARM" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.VIBRATE" />
+    <!-- 读取系统计步传感器（累计步数）。 -->
+    <uses-permission android:name="android.permission.ACTIVITY_RECOGNITION" />
 
     <!-- 让提醒弹窗能显示前台应用名称（仅限带桌面图标的应用）。 -->
     <queries>
@@ -54,7 +56,7 @@
             android:foregroundServiceType="location|specialUse">
             <property
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
-                android:value="Periodic local-only time-tracking signals: foreground app, screen, charging and Wi-Fi state" />
+                android:value="Periodic local-only time-tracking signals: foreground app, screen, charging, Wi-Fi state and step count" />
         </service>
 
         <provider
