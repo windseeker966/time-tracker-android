@@ -2,11 +2,13 @@ package com.wind.timetracker;
 
 import android.Manifest;
 import android.app.Activity;
+import android.app.AlertDialog;
 import android.app.AppOpsManager;
 import android.app.TimePickerDialog;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
+import android.content.pm.ResolveInfo;
 import android.graphics.Color;
 import android.location.Location;
 import android.location.LocationListener;
@@ -28,7 +30,10 @@ import android.widget.TextView;
 import android.widget.Toast;
 
 import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.Executor;
 import java.time.DayOfWeek;
 import java.time.ZoneId;
@@ -46,6 +51,7 @@ public final class MainActivity extends Activity {
     private TextView alertStatsView;
     private TextView alarmStatusView;
     private Button alarmToggleButton;
+    private TextView appBlockStatusView;
     private TextView eventsView;
     private final Handler uiHandler = new Handler(Looper.getMainLooper());
     private final Runnable pomodoroTicker = new Runnable() {
@@ -72,6 +78,7 @@ public final class MainActivity extends Activity {
         // 应用被强行停止后系统闹钟会被清除，打开应用时重新注册。
         AlarmScheduler.schedule(this);
         refreshAlarmStatus();
+        refreshAppBlockStatus();
         uiHandler.removeCallbacks(pomodoroTicker);
         uiHandler.post(pomodoroTicker);
     }
@@ -171,6 +178,22 @@ public final class MainActivity extends Activity {
         alarmToggleButton = button("", v -> toggleAlarm());
         root.addView(alarmToggleButton, fullWidth());
         root.addView(button("测试闹钟（1 分钟后响）", v -> testAlarm()), fullWidth());
+
+        TextView appBlockTitle = sectionTitle("应用屏蔽");
+        root.addView(appBlockTitle, fullWidth());
+        TextView appBlockDescription = new TextView(this);
+        appBlockDescription.setText("台北时间周一 0:00 到周六 0:00，打开列表里的应用会被送回桌面并全屏遮挡，周末不限制。" +
+                "长按“紧急使用”可放行 " + AppBlocker.EMERGENCY_MS / 60_000L + " 分钟（会被记录）。" +
+                "工作日只能往列表里添加应用，不能移除。需要“使用情况访问”和悬浮窗权限。");
+        appBlockDescription.setTextSize(15);
+        appBlockDescription.setPadding(dp(12), dp(8), dp(12), dp(8));
+        root.addView(appBlockDescription, fullWidth());
+        appBlockStatusView = new TextView(this);
+        appBlockStatusView.setTextSize(16);
+        appBlockStatusView.setPadding(dp(12), dp(10), dp(12), dp(10));
+        appBlockStatusView.setBackgroundColor(Color.rgb(248, 235, 235));
+        root.addView(appBlockStatusView, fullWidth());
+        root.addView(button("编辑屏蔽列表", v -> editBlockedApps()), fullWidth());
 
         TextView pomodoroTitle = sectionTitle("番茄钟");
         root.addView(pomodoroTitle, fullWidth());
@@ -402,6 +425,94 @@ public final class MainActivity extends Activity {
         }
         alarmStatusView.setText(text);
         alarmToggleButton.setText(AlarmScheduler.isEnabled(this) ? "关闭闹钟" : "开启闹钟");
+    }
+
+    private void refreshAppBlockStatus() {
+        if (appBlockStatusView == null) return;
+        StringBuilder text = new StringBuilder();
+        if (!AppBlocker.isBlockPeriod()) {
+            text.append("周末，不屏蔽（周一 0:00 开始）");
+        } else {
+            long emergency = AppBlocker.emergencyRemainingMs(this);
+            text.append(emergency > 0
+                    ? "紧急放行中，还剩 " + (emergency + 59_999) / 60_000L + " 分钟"
+                    : "屏蔽中（周六 0:00 解禁）");
+        }
+        Set<String> packages = AppBlocker.blockedPackages(this);
+        text.append("\n列表：");
+        if (packages.isEmpty()) text.append("（空）");
+        for (String pkg : packages) {
+            text.append("\n  · ").append(AppBlocker.appLabel(this, pkg))
+                    .append(isInstalled(pkg) ? "" : "（未安装）");
+        }
+        ZonedDateTime today = ZonedDateTime.now(ZoneId.systemDefault()).toLocalDate()
+                .atStartOfDay(ZoneId.systemDefault());
+        try (DatabaseHelper database = new DatabaseHelper(this)) {
+            long since = today.toInstant().toEpochMilli();
+            text.append("\n今天拦截 ").append(database.countEvents(AppBlocker.EVENT_BLOCKED, since))
+                    .append(" 次 · 紧急使用 ").append(database.countEvents(AppBlocker.EVENT_EMERGENCY, since))
+                    .append(" 次");
+        }
+        if (!hasUsageAccess()) text.append("\n⚠ 未授予使用情况访问，无法检测");
+        if (!Settings.canDrawOverlays(this)) text.append("\n⚠ 未授予悬浮窗权限，无法跳回桌面和遮挡");
+        appBlockStatusView.setText(text);
+    }
+
+    private boolean isInstalled(String pkg) {
+        try {
+            getPackageManager().getApplicationInfo(pkg, 0);
+            return true;
+        } catch (PackageManager.NameNotFoundException error) {
+            return false;
+        }
+    }
+
+    /** 列出带桌面图标的应用，加上列表里已有但未安装的包名。 */
+    private void editBlockedApps() {
+        Set<String> current = AppBlocker.blockedPackages(this);
+        Set<String> candidates = new HashSet<>(current);
+        Intent launcher = new Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER);
+        for (ResolveInfo info : getPackageManager().queryIntentActivities(launcher, 0)) {
+            candidates.add(info.activityInfo.packageName);
+        }
+        candidates.remove(getPackageName());
+        List<String> packages = new ArrayList<>(candidates);
+        packages.sort(Comparator.comparing((String pkg) -> !current.contains(pkg))
+                .thenComparing(pkg -> AppBlocker.appLabel(this, pkg).toLowerCase(java.util.Locale.ROOT)));
+        String[] labels = new String[packages.size()];
+        boolean[] checked = new boolean[packages.size()];
+        for (int i = 0; i < packages.size(); i++) {
+            String pkg = packages.get(i);
+            labels[i] = AppBlocker.appLabel(this, pkg) + (isInstalled(pkg) ? "" : "（未安装）");
+            checked[i] = current.contains(pkg);
+        }
+        boolean locked = AppBlocker.isBlockPeriod();
+        new AlertDialog.Builder(this)
+                .setTitle(locked ? "屏蔽列表（工作日只能添加）" : "屏蔽列表")
+                .setMultiChoiceItems(labels, checked, (dialog, which, isChecked) -> {
+                    if (!isChecked && locked && current.contains(packages.get(which))) {
+                        ((AlertDialog) dialog).getListView().setItemChecked(which, true);
+                        checked[which] = true;
+                        toast("工作日不能移除，周六 0:00 后再改");
+                        return;
+                    }
+                    checked[which] = isChecked;
+                })
+                .setPositiveButton("保存", (dialog, which) -> {
+                    Set<String> selected = new HashSet<>();
+                    for (int i = 0; i < packages.size(); i++) {
+                        if (checked[i]) selected.add(packages.get(i));
+                    }
+                    if (locked) selected.addAll(current);
+                    if (selected.equals(current)) return;
+                    AppBlocker.setBlockedPackages(this, selected);
+                    startForegroundService(new Intent(this, CollectorService.class)
+                            .setAction(CollectorService.ACTION_APP_BLOCK_SETTINGS_CHANGED));
+                    toast("屏蔽列表已保存：" + selected.size() + " 个应用");
+                    refreshAppBlockStatus();
+                })
+                .setNegativeButton("取消", null)
+                .show();
     }
 
     private void startCollector() {

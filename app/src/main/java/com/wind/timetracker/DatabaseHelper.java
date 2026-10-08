@@ -288,6 +288,15 @@ final class DatabaseHelper extends SQLiteOpenHelper {
         return stats;
     }
 
+    /** sinceMs 之后指定类型的事件数。 */
+    int countEvents(String eventType, long sinceMs) {
+        try (Cursor cursor = getReadableDatabase().rawQuery(
+                "SELECT COUNT(*) FROM raw_events WHERE event_type = ? AND timestamp_ms >= ?",
+                new String[] { eventType, Long.toString(sinceMs) })) {
+            return cursor.moveToFirst() ? cursor.getInt(0) : 0;
+        }
+    }
+
     /** 最近一次闹钟：响铃时间、关闭时间与用时、答错次数和关闭方式。 */
     String lastAlarmSummary() {
         long alarmId;

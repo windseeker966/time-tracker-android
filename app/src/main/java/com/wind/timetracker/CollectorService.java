@@ -66,6 +66,7 @@ public final class CollectorService extends Service {
     static final String ACTION_ALARM_FIRE = "com.wind.timetracker.ALARM_FIRE";
     static final String ACTION_ALARM_STOP_NO_OVERLAY = "com.wind.timetracker.ALARM_STOP_NO_OVERLAY";
     static final String ACTION_ALARM_SETTINGS_CHANGED = "com.wind.timetracker.ALARM_SETTINGS_CHANGED";
+    static final String ACTION_APP_BLOCK_SETTINGS_CHANGED = "com.wind.timetracker.APP_BLOCK_SETTINGS_CHANGED";
     static final String PREFS_POMODORO = "pomodoro";
     static final String KEY_POMODORO_PHASE = "phase";
     static final String KEY_POMODORO_END_MS = "end_ms";
@@ -145,6 +146,7 @@ public final class CollectorService extends Service {
     private final List<Button> overlayChoiceButtons = new ArrayList<>();
     private final Runnable overlayTicker = this::tickUsageReminderOverlay;
     private MathAlarm mathAlarm;  // 只在主线程使用
+    private AppBlocker appBlocker;
     /** 计步传感器只在主线程注册/注销；最新累计步数（开机以来），未知为 -1。 */
     private SensorEventListener stepListener;
     private volatile long latestStepCount = -1;
@@ -173,6 +175,14 @@ public final class CollectorService extends Service {
         });
         // 服务重启（包括手机重启）时，如果闹钟还没答题关闭，会继续响。
         executor.scheduleWithFixedDelay(() -> mainHandler.post(mathAlarm::refresh), 0, 5, TimeUnit.SECONDS);
+        appBlocker = new AppBlocker(this, mainHandler, (eventType, pkg) -> {
+            try {
+                executor.execute(() -> saveSnapshot(eventType, pkg));
+            } catch (RuntimeException ignored) { }
+        });
+        executor.scheduleWithFixedDelay(() -> {
+            if (hasUsageAccess() && isDeviceActivelyUsed()) appBlocker.check();
+        }, 0, 1, TimeUnit.SECONDS);
     }
 
     @Override
@@ -209,6 +219,10 @@ public final class CollectorService extends Service {
             fields.detail = AlarmScheduler.formatTime(this) + (AlarmScheduler.isEnabled(this) ? " on" : " off");
             if (executor != null) executor.execute(() ->
                     saveSnapshot(MathAlarm.EVENT_SETTINGS, null, null, fields));
+        } else if (intent != null && ACTION_APP_BLOCK_SETTINGS_CHANGED.equals(intent.getAction())) {
+            String packages = String.join(",", AppBlocker.blockedPackages(this));
+            if (executor != null) executor.execute(() ->
+                    saveSnapshot(AppBlocker.EVENT_SETTINGS, packages));
         } else if (intent != null && ACTION_USAGE_ALERT_RESPONSE.equals(intent.getAction())) {
             String response = intent.getStringExtra(EXTRA_USAGE_ALERT_RESPONSE);
             getSystemService(NotificationManager.class).cancel(USAGE_REMINDER_NOTIFICATION_ID);
@@ -380,6 +394,7 @@ public final class CollectorService extends Service {
                 String action = intent == null ? "state_change" : intent.getAction();
                 if (Intent.ACTION_SCREEN_OFF.equals(action)) {
                     markContinuousUsageInactive();
+                    appBlocker.removeOverlay();
                 }
                 if (Intent.ACTION_SCREEN_ON.equals(action) || Intent.ACTION_USER_PRESENT.equals(action)) {
                     mainHandler.post(mathAlarm::refresh);
@@ -994,11 +1009,22 @@ public final class CollectorService extends Service {
 
     private void saveSnapshot(String eventType, Integer alertLevel, String alertResponse,
                               DatabaseHelper.AlarmFields alarm) {
+        saveSnapshot(eventType, alertLevel, alertResponse, alarm, null);
+    }
+
+    /** @param appPackage 指定写入的应用包名（例如被屏蔽的应用），为 null 时取当前前台应用。 */
+    private void saveSnapshot(String eventType, String appPackage) {
+        saveSnapshot(eventType, null, null, null, appPackage);
+    }
+
+    private void saveSnapshot(String eventType, Integer alertLevel, String alertResponse,
+                              DatabaseHelper.AlarmFields alarm, String appPackage) {
         try {
             Location location = latestLocation == null ? null : new Location(latestLocation);
             PomodoroSnapshot pomodoro = currentPomodoroSnapshot();
             ContinuousUsageSnapshot continuousUsage = currentContinuousUsageSnapshot();
-            database.insertSnapshot(eventType, currentForegroundPackage(), isScreenOn(),
+            database.insertSnapshot(eventType,
+                    appPackage != null ? appPackage : currentForegroundPackage(), isScreenOn(),
                     isCharging(), currentWifiSsid(), locationLabel,
                     location == null ? null : location.getLatitude(),
                     location == null ? null : location.getLongitude(),
@@ -1172,6 +1198,7 @@ public final class CollectorService extends Service {
         stopStepCounter();
         resetContinuousUsageSession();
         removeUsageReminderOverlay();
+        if (appBlocker != null) appBlocker.removeOverlay();
         if (mathAlarm != null) mathAlarm.release();
         if (database != null) database.close();
         super.onDestroy();
