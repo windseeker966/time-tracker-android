@@ -97,4 +97,19 @@ APK：`app/build/outputs/apk/debug/app-debug.apk`
 
 提醒事件类型：`continuous_use_alert`（普通）、`continuous_use_night_alert`（深夜模式）、`usage_alert_response`（选择与结果）。
 
+## 应用内行为表（PiliPlus）
+
+自编译的 PiliPlus（`/Users/wind/vscode/PiliPlus`，见其中 `lib/services/usage_log.dart`）通过 `content://com.wind.timetracker.events` 上报应用内行为，存入 `app_events` 表：`timestamp_ms`、`source_package`、`event_type`、`payload`（JSON）。接口只接受包名 `com.example.piliplus` 的调用。
+
+主要事件：`page_enter` / `page_leave`（页面与参数，如 `bvid`、搜索词）、`nav_tab` / `home_tab`、`list_refresh` / `list_load_more`（列表类名与页码）、`video_info`（标题、UP 主、时长）、`player_playing` / `player_paused` / `player_completed`（播放位置）、`video_end`（每个视频的打开时长 `opened_sec`、实际播放 `played_sec`、看到的最远位置 `max_position_sec`，以及结束原因 `leave` / `switch`）、`app_foreground` / `app_background`。
+
+导出（payload 字段展开到每行）：
+
+```bash
+adb shell content call --uri content://com.wind.timetracker.export --method export_app_events \
+  --arg day --extra start_ms:l:<开始毫秒> --extra end_ms:l:<结束毫秒>
+```
+
+文件在手机 `下载/TimeTracker/time-tracker-app-events-*.jsonl`。
+
 下一阶段可在 Mac 端读取导出的 JSONL，执行分类、时间块合并和每日回顾。

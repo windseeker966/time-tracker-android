@@ -65,6 +65,13 @@
             android:exported="true"
             android:permission="android.permission.DUMP" />
 
+        <!-- PiliPlus（自编译版）上报应用内行为；调用方包名在代码中校验。 -->
+        <provider
+            android:name=".AppEventProvider"
+            android:authorities="com.wind.timetracker.events"
+            android:exported="true"
+            tools:ignore="ExportedContentProvider" />
+
         <receiver
             android:name=".BootReceiver"
             android:enabled="true"

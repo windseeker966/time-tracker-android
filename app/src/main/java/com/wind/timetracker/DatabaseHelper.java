@@ -20,7 +20,7 @@ import java.util.Locale;
 
 final class DatabaseHelper extends SQLiteOpenHelper {
     private static final String DB_NAME = "time_tracker.db";
-    private static final int DB_VERSION = 7;
+    private static final int DB_VERSION = 8;
 
     DatabaseHelper(Context context) {
         super(context, DB_NAME, null, DB_VERSION);
@@ -57,6 +57,18 @@ final class DatabaseHelper extends SQLiteOpenHelper {
                 "alarm_detail TEXT," +
                 "step_count INTEGER)");
         db.execSQL("CREATE INDEX idx_raw_events_timestamp ON raw_events(timestamp_ms)");
+        createAppEventsTable(db);
+    }
+
+    /** 其他应用（目前是 PiliPlus）上报的应用内行为，payload 为 JSON。 */
+    private static void createAppEventsTable(SQLiteDatabase db) {
+        db.execSQL("CREATE TABLE app_events (" +
+                "id INTEGER PRIMARY KEY AUTOINCREMENT," +
+                "timestamp_ms INTEGER NOT NULL," +
+                "source_package TEXT NOT NULL," +
+                "event_type TEXT NOT NULL," +
+                "payload TEXT)");
+        db.execSQL("CREATE INDEX idx_app_events_timestamp ON app_events(timestamp_ms)");
     }
 
     @Override
@@ -91,6 +103,9 @@ final class DatabaseHelper extends SQLiteOpenHelper {
         }
         if (oldVersion < 7) {
             db.execSQL("ALTER TABLE raw_events ADD COLUMN step_count INTEGER");
+        }
+        if (oldVersion < 8) {
+            createAppEventsTable(db);
         }
     }
 
@@ -132,6 +147,15 @@ final class DatabaseHelper extends SQLiteOpenHelper {
             values.put("alarm_detail", alarm.detail);
         }
         return getWritableDatabase().insertOrThrow("raw_events", null, values);
+    }
+
+    void insertAppEvent(long timestampMs, String sourcePackage, String eventType, String payload) {
+        ContentValues values = new ContentValues();
+        values.put("timestamp_ms", timestampMs);
+        values.put("source_package", sourcePackage);
+        values.put("event_type", eventType);
+        values.put("payload", payload);
+        getWritableDatabase().insertOrThrow("app_events", null, values);
     }
 
     long countEvents() {
@@ -183,6 +207,60 @@ final class DatabaseHelper extends SQLiteOpenHelper {
             }
         }
         return result.length() == 0 ? "尚无采集记录" : result.toString();
+    }
+
+    /** 导出 app_events，每行：timestamp_ms、source_package、event_type，以及展开的 payload 字段。 */
+    String exportAppEventsJsonLines(Context context, long startMs, long endMs, String rangeLabel) throws Exception {
+        return writeDownload(context, "app-events-" + rangeLabel, output -> {
+            try (Cursor cursor = getReadableDatabase().rawQuery(
+                    "SELECT timestamp_ms,source_package,event_type,payload FROM app_events " +
+                            "WHERE timestamp_ms >= ? AND timestamp_ms < ? ORDER BY timestamp_ms, id",
+                    new String[] { Long.toString(startMs), Long.toString(endMs) })) {
+                while (cursor.moveToNext()) {
+                    JSONObject object = new JSONObject();
+                    if (!cursor.isNull(3)) {
+                        try {
+                            object = new JSONObject(cursor.getString(3));
+                        } catch (org.json.JSONException error) {
+                            object.put("payload_raw", cursor.getString(3));
+                        }
+                    }
+                    object.put("timestamp_ms", cursor.getLong(0));
+                    object.put("source_package", cursor.getString(1));
+                    object.put("event_type", cursor.getString(2));
+                    output.write((object + "\n").getBytes(StandardCharsets.UTF_8));
+                }
+            }
+        });
+    }
+
+    private interface DownloadWriter {
+        void write(OutputStream output) throws Exception;
+    }
+
+    private static String writeDownload(Context context, String namePrefix, DownloadWriter writer) throws Exception {
+        String stamp = new SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(new Date());
+        String displayName = "time-tracker-" + namePrefix + "-" + stamp + ".jsonl";
+        ContentValues values = new ContentValues();
+        values.put(MediaStore.Downloads.DISPLAY_NAME, displayName);
+        values.put(MediaStore.Downloads.MIME_TYPE, "application/x-ndjson");
+        values.put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/TimeTracker");
+        values.put(MediaStore.Downloads.IS_PENDING, 1);
+
+        ContentResolver resolver = context.getContentResolver();
+        Uri uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values);
+        if (uri == null) throw new IllegalStateException("无法创建导出文件");
+        try (OutputStream output = resolver.openOutputStream(uri)) {
+            if (output == null) throw new IllegalStateException("无法打开导出文件");
+            writer.write(output);
+        } catch (Exception error) {
+            resolver.delete(uri, null, null);
+            throw error;
+        }
+        ContentValues complete = new ContentValues();
+        complete.put(MediaStore.Downloads.IS_PENDING, 0);
+        resolver.update(uri, complete, null, null);
+        return "下载/TimeTracker/" + displayName;
     }
 
     String exportJsonLines(Context context) throws Exception {

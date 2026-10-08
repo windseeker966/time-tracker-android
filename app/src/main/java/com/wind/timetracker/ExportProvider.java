@@ -8,6 +8,7 @@ import android.os.Bundle;
 
 public final class ExportProvider extends ContentProvider {
     private static final String METHOD_EXPORT = "export";
+    private static final String METHOD_EXPORT_APP_EVENTS = "export_app_events";
 
     @Override
     public boolean onCreate() {
@@ -16,7 +17,7 @@ public final class ExportProvider extends ContentProvider {
 
     @Override
     public Bundle call(String method, String arg, Bundle extras) {
-        if (!METHOD_EXPORT.equals(method)) {
+        if (!METHOD_EXPORT.equals(method) && !METHOD_EXPORT_APP_EVENTS.equals(method)) {
             throw new IllegalArgumentException("不支持的方法：" + method);
         }
         if (extras == null || !extras.containsKey("start_ms") || !extras.containsKey("end_ms")) {
@@ -37,7 +38,9 @@ public final class ExportProvider extends ContentProvider {
         try {
             android.content.Context context = getRequiredContext();
             DatabaseHelper database = new DatabaseHelper(context);
-            String path = database.exportJsonLines(context, startMs, endMs, label);
+            String path = METHOD_EXPORT_APP_EVENTS.equals(method)
+                    ? database.exportAppEventsJsonLines(context, startMs, endMs, label)
+                    : database.exportJsonLines(context, startMs, endMs, label);
             Bundle result = new Bundle();
             result.putString("path", path);
             return result;
