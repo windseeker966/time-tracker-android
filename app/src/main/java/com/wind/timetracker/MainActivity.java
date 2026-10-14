@@ -185,7 +185,8 @@ public final class MainActivity extends Activity {
         appBlockDescription.setText("台北时间周一 0:00 到周六 0:00，打开列表里的应用会被送回桌面并全屏遮挡，周末不限制。" +
                 "长按“紧急使用”可放行 " + AppBlocker.EMERGENCY_MS / 60_000L + " 分钟（会被记录）。" +
                 "工作日只能往列表里添加应用，不能移除。" +
-                "另外，哔哩哔哩（含 PiliPlus）每天 12–14 点、19–22 点、23–5 点屏蔽，遮挡页会给出这个时段可以做的事。" +
+                "另外，哔哩哔哩官方客户端全天屏蔽，B 站只用 PiliPlus；PiliPlus 每天 12–14 点、19–22 点、23–5 点屏蔽，" +
+                "遮挡页会给出这个时段可以做的事。" +
                 "需要“使用情况访问”和悬浮窗权限。");
         appBlockDescription.setTextSize(15);
         appBlockDescription.setPadding(dp(12), dp(8), dp(12), dp(8));
@@ -441,7 +442,8 @@ public final class MainActivity extends Activity {
                     : "屏蔽中（周六 0:00 解禁）");
         }
         AppBlocker.Slot slot = AppBlocker.currentBilibiliSlot();
-        text.append("\n哔哩哔哩：").append(slot == null ? "可以使用"
+        text.append("\n哔哩哔哩官方客户端：全天屏蔽");
+        text.append("\nPiliPlus：").append(slot == null ? "可以使用"
                 : "屏蔽中（" + slot.name + "，" + slot.endHour + ":00 解禁）");
         Set<String> packages = AppBlocker.blockedPackages(this);
         text.append("\n列表：");

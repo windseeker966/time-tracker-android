@@ -42,10 +42,14 @@ final class AppBlocker {
     /** 首次使用时的屏蔽列表：Edge。 */
     static final Set<String> DEFAULT_PACKAGES = new HashSet<>(Arrays.asList("com.microsoft.emmx"));
     static final long EMERGENCY_MS = 5 * 60_000L;
-    /** 哔哩哔哩官方版、概念版、HD 版和第三方客户端 PiliPlus。 */
+    /** 哔哩哔哩官方版、概念版、HD 版：全天屏蔽，B 站只用 PiliPlus（有应用内的使用记录和稍后再看模式）。 */
+    static final Set<String> BILIBILI_OFFICIAL_PACKAGES = new HashSet<>(Arrays.asList(
+            "com.bilibili.app.in", "com.bilibili.app.blue", "tv.danmaku.bili", "tv.danmaku.bilibilihd"));
+    static final String PILIPLUS_PACKAGE = "com.example.piliplus";
+    /** 按时段屏蔽的哔哩哔哩客户端：官方客户端加 PiliPlus。 */
     static final Set<String> BILIBILI_PACKAGES = new HashSet<>(Arrays.asList(
             "com.bilibili.app.in", "com.bilibili.app.blue", "tv.danmaku.bili", "tv.danmaku.bilibilihd",
-            "com.example.piliplus"));
+            PILIPLUS_PACKAGE));
     /** 哔哩哔哩每天的屏蔽时段：开始小时（含）、结束小时（不含）、名称、这个时段的建议。 */
     static final Slot[] BILIBILI_SLOTS = {
             new Slot(12, 14, "午饭后", "睡 20 分钟。先定好闹钟，手机放远一点。"),
@@ -192,6 +196,10 @@ final class AppBlocker {
 
     private Block blockFor(String pkg) {
         if (pkg == null || emergencyRemainingMs(context) > 0) return null;
+        if (BILIBILI_OFFICIAL_PACKAGES.contains(pkg)) {
+            return new Block("B 站请用 PiliPlus：官方客户端全天屏蔽。",
+                    "打开 PiliPlus，先看稍后再看里已经挑好的视频。");
+        }
         if (BILIBILI_PACKAGES.contains(pkg)) {
             Slot slot = currentBilibiliSlot();
             if (slot != null) {
