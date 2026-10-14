@@ -39,9 +39,8 @@ final class AppBlocker {
     static final String PREFS = "app_block";
     static final String KEY_PACKAGES = "packages";
     static final String KEY_EMERGENCY_UNTIL_MS = "emergency_until_ms";
-    /** Edge 和 Telegram（商店版 + 官网直装版）。 */
-    static final Set<String> DEFAULT_PACKAGES = new HashSet<>(Arrays.asList(
-            "com.microsoft.emmx", "org.telegram.messenger", "org.telegram.messenger.web"));
+    /** 首次使用时的屏蔽列表：Edge。 */
+    static final Set<String> DEFAULT_PACKAGES = new HashSet<>(Arrays.asList("com.microsoft.emmx"));
     static final long EMERGENCY_MS = 5 * 60_000L;
     /** 哔哩哔哩官方版、概念版、HD 版和第三方客户端 PiliPlus。 */
     static final Set<String> BILIBILI_PACKAGES = new HashSet<>(Arrays.asList(
