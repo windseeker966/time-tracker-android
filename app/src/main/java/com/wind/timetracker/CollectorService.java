@@ -103,6 +103,8 @@ public final class CollectorService extends Service {
     static final String KEY_REST_UNTIL_ELAPSED = "rest_until_elapsed";
     static final String KEY_SNOOZE_USED = "snooze_used";
     static final String KEY_LAST_ALERT_ELAPSED = "last_alert_elapsed";
+    /** 深夜解锁时正在用白名单应用，推迟了这次解锁提醒；离开白名单后补上。 */
+    static final String KEY_NIGHT_ALERT_OWED = "night_alert_owed";
     /** 旧版本的深夜 15 分钟计时起点，只用于清理。 */
     private static final String KEY_NIGHT_ANCHOR_ELAPSED_LEGACY = "night_anchor_elapsed";
     static final String KEY_NIGHT_MODE_ENABLED = "night_mode_enabled";
@@ -126,6 +128,18 @@ public final class CollectorService extends Service {
     static final String OUTCOME_REST_COMPLETED = "rest_completed";
     static final String OUTCOME_BREAK = "break_after_alert";
 
+    /**
+     * 提醒白名单：在前台时不弹提醒、不显示休息倒计时，深夜解锁也不立即提醒；连续使用照常计时，
+     * 离开后恢复。弹窗上按这个顺序显示快捷入口（未安装的跳过，同名只显示第一个）。
+     */
+    static final String[][] REMINDER_ALLOWED_APPS = {
+            {"com.android.deskclock", "闹钟"},
+            {"com.google.android.keep", "Keep"},
+            {"com.google.android.apps.photos", "相册"},
+            {"com.miui.gallery", "相册"},
+            {"com.wind.timetracker", "时间记录"},
+    };
+
     private DatabaseHelper database;
     private ScheduledExecutorService executor;
     private BroadcastReceiver stateReceiver;
@@ -147,6 +161,8 @@ public final class CollectorService extends Service {
     private final Runnable overlayTicker = this::tickUsageReminderOverlay;
     private MathAlarm mathAlarm;  // 只在主线程使用
     private AppBlocker appBlocker;
+    /** 前台是否为提醒白名单应用；由每秒的前台检测更新。 */
+    private volatile boolean foregroundAllowed;
     /** 计步传感器只在主线程注册/注销；最新累计步数（开机以来），未知为 -1。 */
     private SensorEventListener stepListener;
     private volatile long latestStepCount = -1;
@@ -181,8 +197,28 @@ public final class CollectorService extends Service {
             } catch (RuntimeException ignored) { }
         });
         executor.scheduleWithFixedDelay(() -> {
-            if (hasUsageAccess() && isDeviceActivelyUsed()) appBlocker.check();
+            if (hasUsageAccess() && isDeviceActivelyUsed()) updateForegroundAllowed(appBlocker.check());
         }, 0, 1, TimeUnit.SECONDS);
+    }
+
+    static boolean isReminderAllowed(String pkg) {
+        if (pkg == null) return false;
+        for (String[] app : REMINDER_ALLOWED_APPS) {
+            if (app[0].equals(pkg)) return true;
+        }
+        return false;
+    }
+
+    /** 后台线程调用。进入白名单应用时收起提醒弹窗；离开时补上推迟的提醒或重新显示弹窗。 */
+    private void updateForegroundAllowed(String pkg) {
+        boolean allowed = isReminderAllowed(pkg);
+        if (allowed == foregroundAllowed) return;
+        foregroundAllowed = allowed;
+        if (allowed) {
+            if (usageReminderView != null) mainHandler.post(this::removeUsageReminderOverlay);
+        } else {
+            checkContinuousUsage();
+        }
     }
 
     @Override
@@ -490,12 +526,14 @@ public final class CollectorService extends Service {
 
         prefs.edit().putLong(KEY_USAGE_LAST_CHECK_ELAPSED, now).apply();
 
+        // 白名单应用在前台：不显示弹窗，离开后由 updateForegroundAllowed 再次检查。
+        boolean allowed = foregroundAllowed;
         long restUntil = prefs.getLong(KEY_REST_UNTIL_ELAPSED, 0);
         if (restUntil > 0) {
             if (now >= restUntil) {
                 saveSnapshot(EVENT_ALERT_RESPONSE, prefs.getInt(KEY_ALERT_LEVEL, 0), OUTCOME_REST_COMPLETED);
                 resetContinuousUsageSession();
-            } else {
+            } else if (!allowed) {
                 // 休息中途亮屏：继续显示休息倒计时。
                 showContinuousUsageAlert(false);
             }
@@ -503,7 +541,7 @@ public final class CollectorService extends Service {
         }
         if (prefs.getBoolean(KEY_ALERT_PENDING, false)) {
             // 弹窗还没有做出选择（例如熄屏又亮屏），重新显示，不能靠熄屏绕过。
-            showContinuousUsageAlert(false);
+            if (!allowed) showContinuousUsageAlert(false);
             return;
         }
 
@@ -512,11 +550,16 @@ public final class CollectorService extends Service {
         if (night) {
             // 深夜：每次解锁立即提醒；跨过 0 点仍在使用时，本夜还没提醒过也立即提醒。
             long nightStartElapsed = now - millisSinceNightStart();
-            if (unlocked || prefs.getLong(KEY_LAST_ALERT_ELAPSED, 0) < nightStartElapsed) {
+            if (unlocked || prefs.getBoolean(KEY_NIGHT_ALERT_OWED, false)
+                    || prefs.getLong(KEY_LAST_ALERT_ELAPSED, 0) < nightStartElapsed) {
                 deadline = now;
             }
         }
         if (now >= deadline) {
+            if (allowed) {
+                if (night && unlocked) prefs.edit().putBoolean(KEY_NIGHT_ALERT_OWED, true).apply();
+                return;
+            }
             fireContinuousUsageAlert(prefs, now, usageLimitMs, night);
         }
     }
@@ -532,6 +575,7 @@ public final class CollectorService extends Service {
                 .putLong(KEY_LOCK_UNTIL_ELAPSED, now + lockSeconds(level, night) * 1000L)
                 .putLong(KEY_LAST_ALERT_ELAPSED, now)
                 .putLong(KEY_USAGE_NEXT_ALERT_ELAPSED, now + usageLimitMs)
+                .remove(KEY_NIGHT_ALERT_OWED)
                 .apply();
         saveSnapshot(night ? EVENT_NIGHT_ALERT : EVENT_ALERT, level, null);
         showContinuousUsageAlert(false);
@@ -664,7 +708,7 @@ public final class CollectorService extends Service {
                 KEY_USAGE_START_ELAPSED, KEY_USAGE_NEXT_ALERT_ELAPSED, KEY_USAGE_LAST_CHECK_ELAPSED,
                 KEY_USAGE_INACTIVE_SINCE_ELAPSED, KEY_ALERT_LEVEL, KEY_ALERT_PENDING,
                 KEY_LOCK_UNTIL_ELAPSED, KEY_REST_UNTIL_ELAPSED, KEY_SNOOZE_USED,
-                KEY_LAST_ALERT_ELAPSED, KEY_NIGHT_ANCHOR_ELAPSED_LEGACY,
+                KEY_LAST_ALERT_ELAPSED, KEY_NIGHT_ALERT_OWED, KEY_NIGHT_ANCHOR_ELAPSED_LEGACY,
         };
         SharedPreferences.Editor editor = null;
         for (String key : sessionKeys) {
@@ -756,6 +800,7 @@ public final class CollectorService extends Service {
             }
             root.addView(choiceButton("在做正事（会被记录）", RESPONSE_WORK, test), overlayFullWidth());
         }
+        if (!test) addAllowedAppButtons(root, bodyColor);
 
         Button emergency = new Button(this);
         emergency.setText("紧急使用（长按，会被记录）");
@@ -822,6 +867,45 @@ public final class CollectorService extends Service {
         }
         if (level > 1) text.append("\n\n这是本轮第 ").append(level).append(" 次提醒。");
         return text.toString();
+    }
+
+    /**
+     * 白名单应用的快捷入口。打开后由每秒的前台检测收起弹窗；
+     * 不在点击时直接移除弹窗，因为 HyperOS 只在本应用有可见窗口时才允许后台服务启动界面。
+     */
+    private void addAllowedAppButtons(LinearLayout root, int labelColor) {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        List<String> labels = new ArrayList<>();
+        PackageManager manager = getPackageManager();
+        for (String[] app : REMINDER_ALLOWED_APPS) {
+            if (labels.contains(app[1])) continue;
+            Intent launch = manager.getLaunchIntentForPackage(app[0]);
+            if (launch == null) continue;
+            labels.add(app[1]);
+            Button button = new Button(this);
+            button.setText(app[1]);
+            button.setTextSize(14);
+            button.setAllCaps(false);
+            button.setOnClickListener(v -> {
+                try {
+                    startActivity(launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+                } catch (RuntimeException error) {
+                    Toast.makeText(this, "无法打开" + app[1], Toast.LENGTH_SHORT).show();
+                }
+            });
+            row.addView(button, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
+        }
+        if (labels.isEmpty()) return;
+        TextView hint = new TextView(this);
+        hint.setText("以下应用不受提醒限制：");
+        hint.setTextColor(labelColor);
+        hint.setTextSize(13);
+        hint.setGravity(Gravity.CENTER);
+        LinearLayout.LayoutParams hintParams = overlayFullWidth();
+        hintParams.topMargin = dp(24);
+        root.addView(hint, hintParams);
+        root.addView(row, overlayFullWidth());
     }
 
     private Button choiceButton(String label, String response, boolean test) {

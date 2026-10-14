@@ -107,8 +107,10 @@ final class AppBlocker {
     /**
      * 后台线程调用。设备正在使用（亮屏且已解锁）时才需要调用。
      * 遮挡跟随前台应用：被屏蔽的应用在前台就一直遮挡并定期重试回桌面，离开后自动移除。
+     *
+     * @return 当前前台应用包名（未知为 null），供连续使用提醒判断白名单。
      */
-    void check() {
+    String check() {
         String pkg = foregroundPackage();
         boolean block = pkg != null && isBlockPeriod() && emergencyRemainingMs(context) <= 0
                 && blockedPackages(context).contains(pkg);
@@ -117,7 +119,7 @@ final class AppBlocker {
                 blockingPackage = null;
                 mainHandler.post(this::removeOverlay);
             }
-            return;
+            return pkg;
         }
         long now = System.currentTimeMillis();
         if (!pkg.equals(blockingPackage) || overlayView == null) {
@@ -131,6 +133,7 @@ final class AppBlocker {
             lastGoHomeMs = now;
             goHome();
         }
+        return pkg;
     }
 
     /** 增量读取使用事件，避免每秒扫描 30 分钟的记录。 */
