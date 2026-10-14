@@ -27,7 +27,12 @@ import java.util.Set;
 import java.util.TreeSet;
 
 /**
- * 应用屏蔽：台北时间周一 0:00 到周六 0:00 期间，打开屏蔽列表里的应用会被送回桌面并全屏遮挡。
+ * 应用屏蔽，两条规则（台北时间）：
+ * <ul>
+ *   <li>周一 0:00 到周六 0:00，屏蔽列表里的应用；</li>
+ *   <li>每天在饭后和睡前的时段屏蔽哔哩哔哩各客户端，遮挡页给出这个时段可以做的事。</li>
+ * </ul>
+ * 打开被屏蔽的应用会被送回桌面，遮挡留到点“知道了”或熄屏。
  * {@link #check()} 在服务的后台线程每秒调用；遮挡界面只在主线程创建和移除。
  */
 final class AppBlocker {
@@ -38,11 +43,55 @@ final class AppBlocker {
     static final Set<String> DEFAULT_PACKAGES = new HashSet<>(Arrays.asList(
             "com.microsoft.emmx", "org.telegram.messenger", "org.telegram.messenger.web"));
     static final long EMERGENCY_MS = 5 * 60_000L;
+    /** 哔哩哔哩官方版、概念版、HD 版和第三方客户端 PiliPlus。 */
+    static final Set<String> BILIBILI_PACKAGES = new HashSet<>(Arrays.asList(
+            "com.bilibili.app.in", "com.bilibili.app.blue", "tv.danmaku.bili", "tv.danmaku.bilibilihd",
+            "com.example.piliplus"));
+    /** 哔哩哔哩每天的屏蔽时段：开始小时（含）、结束小时（不含）、名称、这个时段的建议。 */
+    static final Slot[] BILIBILI_SLOTS = {
+            new Slot(12, 14, "午饭后", "睡 20 分钟。先定好闹钟，手机放远一点。"),
+            new Slot(19, 22, "晚饭后", "出门散步 20 分钟，或者洗个澡、听听播客和音乐，不看屏幕。"),
+            new Slot(23, 5, "睡前", "看几页书，或者写几句日记，然后去睡觉。"),
+    };
     private static final long GO_HOME_RETRY_MS = 3_000L;
 
     static final String EVENT_BLOCKED = "app_blocked";
     static final String EVENT_EMERGENCY = "app_block_emergency";
     static final String EVENT_SETTINGS = "app_block_settings";
+
+    static final class Slot {
+        final int startHour;
+        final int endHour;
+        final String name;
+        final String suggestion;
+
+        Slot(int startHour, int endHour, String name, String suggestion) {
+            this.startHour = startHour;
+            this.endHour = endHour;
+            this.name = name;
+            this.suggestion = suggestion;
+        }
+
+        boolean contains(int hour) {
+            return startHour < endHour ? hour >= startHour && hour < endHour
+                    : hour >= startHour || hour < endHour;  // 跨过 0 点
+        }
+
+        String range() {
+            return startHour + ":00–" + endHour + ":00";
+        }
+    }
+
+    /** 遮挡页的内容。 */
+    private static final class Block {
+        final String message;
+        final String suggestion;
+
+        Block(String message, String suggestion) {
+            this.message = message;
+            this.suggestion = suggestion;
+        }
+    }
 
     /** 由服务把事件写入数据库；pkg 写入 app_package 列。 */
     interface Recorder {
@@ -87,6 +136,15 @@ final class AppBlocker {
         return day != DayOfWeek.SATURDAY && day != DayOfWeek.SUNDAY;
     }
 
+    /** 当前所在的哔哩哔哩屏蔽时段，不在时段内返回 null。 */
+    static Slot currentBilibiliSlot() {
+        int hour = ZonedDateTime.now(CollectorService.NIGHT_ZONE).getHour();
+        for (Slot slot : BILIBILI_SLOTS) {
+            if (slot.contains(hour)) return slot;
+        }
+        return null;
+    }
+
     /** 紧急使用剩余毫秒数；存的是系统时间，超过上限视为改过时间，作废。 */
     static long emergencyRemainingMs(Context context) {
         long remaining = prefs(context).getLong(KEY_EMERGENCY_UNTIL_MS, 0) - System.currentTimeMillis();
@@ -106,19 +164,16 @@ final class AppBlocker {
 
     /**
      * 后台线程调用。设备正在使用（亮屏且已解锁）时才需要调用。
-     * 遮挡跟随前台应用：被屏蔽的应用在前台就一直遮挡并定期重试回桌面，离开后自动移除。
+     * 被屏蔽的应用在前台时显示遮挡并定期重试回桌面；回到桌面后遮挡保留，等点“知道了”或熄屏。
      *
      * @return 当前前台应用包名（未知为 null），供连续使用提醒判断白名单。
      */
     String check() {
         String pkg = foregroundPackage();
-        boolean block = pkg != null && isBlockPeriod() && emergencyRemainingMs(context) <= 0
-                && blockedPackages(context).contains(pkg);
-        if (!block) {
-            if (blockingPackage != null) {
-                blockingPackage = null;
-                mainHandler.post(this::removeOverlay);
-            }
+        Block block = blockFor(pkg);
+        if (block == null) {
+            // 已经离开被屏蔽的应用。遮挡不跟着移除，否则一回到桌面就消失，来不及看。
+            blockingPackage = null;
             return pkg;
         }
         long now = System.currentTimeMillis();
@@ -128,12 +183,27 @@ final class AppBlocker {
             blockingPackage = pkg;
             lastGoHomeMs = now;
             String label = appLabel(context, pkg);
-            mainHandler.post(() -> showOverlay(pkg, label));
+            mainHandler.post(() -> showOverlay(pkg, label, block));
         } else if (now - lastGoHomeMs >= GO_HOME_RETRY_MS || now < lastGoHomeMs) {
             lastGoHomeMs = now;
             goHome();
         }
         return pkg;
+    }
+
+    private Block blockFor(String pkg) {
+        if (pkg == null || emergencyRemainingMs(context) > 0) return null;
+        if (BILIBILI_PACKAGES.contains(pkg)) {
+            Slot slot = currentBilibiliSlot();
+            if (slot != null) {
+                return new Block("现在是" + slot.name + "（" + slot.range() + "），"
+                        + slot.endHour + ":00 解禁。", slot.suggestion);
+            }
+        }
+        if (isBlockPeriod() && blockedPackages(context).contains(pkg)) {
+            return new Block("周一到周五（台北时间）不能使用这个应用，周六 0:00 解禁。", null);
+        }
+        return null;
     }
 
     /** 增量读取使用事件，避免每秒扫描 30 分钟的记录。 */
@@ -183,7 +253,7 @@ final class AppBlocker {
 
     // ---- 遮挡界面（主线程） ----
 
-    private void showOverlay(String pkg, String label) {
+    private void showOverlay(String pkg, String label, Block block) {
         if (overlayView != null) return;
         if (!Settings.canDrawOverlays(context)) {
             Toast.makeText(context, "已屏蔽：" + label, Toast.LENGTH_LONG).show();
@@ -204,18 +274,34 @@ final class AppBlocker {
         root.addView(title, fullWidth());
 
         TextView message = new TextView(context);
-        message.setText("周一到周五（台北时间）不能使用这个应用，周六 0:00 解禁。\n\n离开这个应用后遮挡会自动消失。");
+        message.setText(block.message);
         message.setTextColor(Color.rgb(70, 70, 70));
         message.setTextSize(20);
         message.setGravity(Gravity.CENTER);
         message.setPadding(0, dp(20), 0, dp(20));
         root.addView(message, fullWidth());
 
+        if (block.suggestion != null) {
+            TextView suggestion = new TextView(context);
+            suggestion.setText("现在可以做的事：\n" + block.suggestion);
+            suggestion.setTextColor(Color.rgb(35, 35, 35));
+            suggestion.setTextSize(20);
+            suggestion.setGravity(Gravity.CENTER);
+            suggestion.setPadding(dp(16), dp(16), dp(16), dp(16));
+            suggestion.setBackgroundColor(Color.rgb(232, 238, 248));
+            LinearLayout.LayoutParams suggestionParams = fullWidth();
+            suggestionParams.bottomMargin = dp(20);
+            root.addView(suggestion, suggestionParams);
+        }
+
         Button close = new Button(context);
-        close.setText("回到桌面");
+        close.setText("知道了");
         close.setTextSize(18);
         close.setAllCaps(false);
-        close.setOnClickListener(v -> goHome());
+        close.setOnClickListener(v -> {
+            goHome();  // 先回桌面再移除：HyperOS 只在本应用有可见窗口时允许启动桌面
+            removeOverlay();
+        });
         root.addView(close, fullWidth());
 
         Button emergency = new Button(context);
