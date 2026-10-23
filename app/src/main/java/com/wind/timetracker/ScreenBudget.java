@@ -62,8 +62,8 @@ final class ScreenBudget {
     };
     private static final Set<String> GATED_SYSTEM = new HashSet<>(Arrays.asList(
             "com.android.chrome", "com.android.browser", "com.miui.video", "com.miui.player",
-            "com.google.android.youtube", "com.google.android.googlequicksearchbox", "com.miui.newhome"));
-    /** 白名单：地图、邮件、联系、生活支付、学校、英语阅读、工具。 */
+            "com.google.android.googlequicksearchbox", "com.miui.newhome"));
+    /** 白名单：地图、邮件、联系、生活支付、出行、学校与办公、英语（YouTube 目前只用来学英语）、音乐、工具。 */
     private static final Set<String> FREE_APPS = new HashSet<>(Arrays.asList(
             // 地图
             "com.autonavi.minimap", "com.baidu.BaiduMap", "com.google.android.apps.maps", "com.tencent.map",
@@ -71,16 +71,35 @@ final class ScreenBudget {
             "com.microsoft.office.outlook", "com.google.android.gm", "com.netease.mail", "com.tencent.androidqqmail",
             // 联系
             "com.tencent.mm", "com.tencent.mobileqq", "com.tencent.tim",
-            // 生活、支付
+            // 生活、支付、银行
             "com.sankuai.meituan", "com.taobao.taobao", "com.eg.android.AlipayGphone", "com.chinamworld.bocmbci",
-            "com.jingdong.app.mall", "com.sdu.didi.psnger",
-            // 学校
-            "com.chaoxing.mobile", "com.tencent.wework", "com.xuetangx.ykt", "com.klcxkj.zqxy",
-            // 英语阅读
-            "com.wind.subword", "com.bilingify.readest", "epub.reader",
-            // 工具
+            "com.jingdong.app.mall", "com.sdu.didi.psnger", "cmb.pb", "com.csii.csbank", "cn.gov.pbc.dcep",
+            "com.mipay.wallet", "com.paypal.android.p2pmobile", "com.gojek.gopay", "com.cainiao.wireless",
+            "com.greenpoint.android.mc10086.activity", "com.ct.client", "com.wondersgroup.ybtproduct", "com.zhszcn.zhsmk",
+            "com.qiekj.user", "cn.cyberIdentity.certification",
+            // 出行
+            "com.MobileTicket", "com.mygolbs.mybus", "com.ibike.publicbicycle.activity", "cn.ninebot.ninebot",
+            // 学校、办公、学习
+            "com.chaoxing.mobile", "com.tencent.wework", "com.xuetangx.ykt", "com.klcxkj.zqxy", "com.larksuite.suite",
+            "cn.com.chsi.chsiapp", "cn.unipus.itest.student", "com.netease.edu.ucmooc", "com.ichi2.anki",
+            "com.huachenjie.shandong_school", "com.huachenjie.shandong_school_pro", "com.Enlink.sdp",
+            "cn.wps.moffice_eng.xiaomi.lite", "com.microsoft.office.word", "com.microsoft.office.excel",
+            "com.intsig.camscanner", "com.google.android.apps.docs", "com.google.android.apps.docs.editors.docs",
+            "com.google.android.apps.docs.editors.sheets", "com.google.android.apps.docs.editors.slides",
+            "com.google.android.calendar", "com.google.android.apps.tasks", "com.google.android.apps.translate",
+            "com.baidu.baidutranslate", "md.obsidian", "notion.id",
+            // 英语、音乐
+            "com.wind.subword", "com.bilingify.readest", "epub.reader", "com.google.android.youtube",
+            "com.apple.android.music",
+            // 系统组件、工具
             "com.wind.timetracker", "com.google.android.apps.authenticator2", "com.nebula.clashmi",
-            "com.google.android.keep", "com.google.android.apps.photos"));
+            "com.google.android.keep", "com.google.android.apps.photos", "com.google.android.documentsui",
+            "com.google.android.tts", "com.google.android.apps.credentialmanager", "com.touchtype.swiftkey",
+            "org.fcitx.fcitx5.android", "com.termux", "com.server.auditor.ssh.client", "org.localsend.localsend_app",
+            "com.estmob.android.sendanywhere", "com.v2ray.ang", "com.github.metacubex.clash.meta",
+            "moe.shizuku.privileged.api", "bin.mt.plus", "com.aikuai.ecloud", "com.alicloud.databox",
+            "com.baidu.netdisk", "com.microsoft.skydrive", "mega.privacy.android.app",
+            "com.duokan.phone.remotecontroller"));
 
     private static ScreenBudget instance;
 
