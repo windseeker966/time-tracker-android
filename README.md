@@ -20,6 +20,7 @@
 - 闹钟事件（`alarm_fire`、`alarm_wrong`、`alarm_dismissed`、`alarm_settings`）写入数据库，附带 `alarm_id`（计划响铃时间）、响铃秒数、当前进度、累计答错次数、`alarm_emergency_count`（紧急关闭为 1）和 `alarm_detail`（关闭方式 `solved` / `emergency` / `no_overlay`，测试闹钟带 `test`；不记录具体题目）。
 - 应用屏蔽：台北时间周一 0:00 至周六 0:00，打开屏蔽列表里的应用会被立即送回桌面并全屏遮挡（亮屏解锁时每秒检测，最多约 1 秒延迟）；周末不限制。默认屏蔽 Edge（`com.microsoft.emmx`），可在“编辑屏蔽列表”中增删，但工作日只能添加不能移除。哔哩哔哩官方客户端（官方版、概念版、HD 版）全天屏蔽，B 站只用 PiliPlus；PiliPlus 每天按时段屏蔽：13–15 点（午饭后）、19–22 点（晚饭后）、23–5 点（睡前），遮挡页显示这个时段的建议。这两条不受工作日和列表限制；手机浏览器里的 bilibili.com 检测不到。遮挡在送回桌面后保留，点“知道了”或熄屏才关闭。长按“紧急使用”放行 5 分钟（两条规则都放行）。事件 `app_blocked`、`app_block_emergency` 的 `app_package` 为被屏蔽的应用；`app_block_settings` 的 `app_package` 为修改后的完整列表（逗号分隔）。
 - 计步：每条记录附带 `step_count`（系统计步传感器的开机以来累计步数，重启后归零；没有计步权限或传感器时为空）。用相邻记录相减即可得到任意时段的步数，例如闹钟响铃到关闭之间走了多少步。计步由低功耗协处理器完成，传感器批量上报，基本不额外耗电。
+- 手机额度（只记账、不拦截，见 `ScreenBudget.java`）：除白名单外的应用都要用额度，额度用学习、上课、走路换。可用 = 结转（最多 60）+ 底额 45 + 学习分钟（每天最多算 150）+ 开始次数 × 10（最多 4 次）+ 上课分钟 × 0.25 + 屏幕关着时走的步数 / 1000 × 10（每天最多算 6000 步）；每天最多用 240 分钟；一天从早上 5 点算起。每周可以提前一天把第二天设为休息日：固定 150 分钟，不挣也不结转。学习分钟和开始次数来自 iPad LearningPack 的学习码（工具栏「状态」›「手机学习码」：分钟、次数和 6 位校验码），在主界面「输入学习码」填入，可以重复输入，取最大值；校验码是 HMAC-SHA256(配对密钥, "日期|分钟|次数") 前 4 字节去掉最高位模 1,000,000，和 LearningPack 的 `StudyCode` 一致，配对密钥在 iPad「设置」›「手机额度」。上课时长在「录入今天上课」手动填。白名单：系统应用（`com.android.`、`com.miui.` 等前缀，Chrome、小米浏览器、小米视频除外）、地图、邮件、微信和 QQ、外卖支付、学习通和企业微信、subword / Readest / epub 阅读器、时间记录本身；其余应用（Chrome、PiliPlus、Nekogram、游戏、ChatGPT……）都计费。余额用完后继续用的时间记为超出。常驻通知和主界面最上面显示余额、来源和今天各计费应用的用时。原有的屏蔽、连续使用提醒、深夜模式照旧。
 - 后台恢复需要“始终允许”定位；若权限缺失，服务会安全降级并继续采集非定位信号，不会崩溃。
 - Manifest 未申请 `INTERNET` 权限，当前版本不能上传数据，但导出的 JSONL 包含完整位置历史，应妥善保管。
 
@@ -112,5 +113,7 @@ adb shell content call --uri content://com.wind.timetracker.export --method expo
 ```
 
 文件在手机 `下载/TimeTracker/time-tracker-app-events-*.jsonl`。
+
+手机额度的事件也写在 `app_events`，`source_package` 为 `budget`：`budget_code`（输入学习码：`minutes`、`starts`、`valid`）、`budget_class`（上课分钟）、`budget_rest_day`（设或取消休息日）、`budget_secret`、`budget_exhausted`（当天第一次用完，附当时的汇总）、`budget_over`（一段超出：应用、秒数）、`budget_day`（换天时前一天的汇总：可用、已用、超出、各来源、各应用分钟）。
 
 下一阶段可在 Mac 端读取导出的 JSONL，执行分类、时间块合并和每日回顾。

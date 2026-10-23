@@ -53,11 +53,13 @@ public final class MainActivity extends Activity {
     private Button alarmToggleButton;
     private TextView appBlockStatusView;
     private TextView eventsView;
+    private BudgetPanel budgetPanel;
     private final Handler uiHandler = new Handler(Looper.getMainLooper());
     private final Runnable pomodoroTicker = new Runnable() {
         @Override public void run() {
             refreshPomodoroStatus();
             refreshUsageReminderStatus();
+            if (budgetPanel != null) budgetPanel.refresh();
             uiHandler.postDelayed(this, 1000);
         }
     };
@@ -96,6 +98,9 @@ public final class MainActivity extends Activity {
         int padding = dp(20);
         root.setPadding(padding, padding, padding, padding);
         scroll.addView(root);
+
+        budgetPanel = new BudgetPanel(this);
+        root.addView(budgetPanel.build(), fullWidth());
 
         TextView title = new TextView(this);
         title.setText("本地时间采集");

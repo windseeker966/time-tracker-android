@@ -67,6 +67,8 @@ public final class CollectorService extends Service {
     static final String ACTION_ALARM_STOP_NO_OVERLAY = "com.wind.timetracker.ALARM_STOP_NO_OVERLAY";
     static final String ACTION_ALARM_SETTINGS_CHANGED = "com.wind.timetracker.ALARM_SETTINGS_CHANGED";
     static final String ACTION_APP_BLOCK_SETTINGS_CHANGED = "com.wind.timetracker.APP_BLOCK_SETTINGS_CHANGED";
+    /** 手机额度有输入（学习码、上课、休息日）：马上刷新常驻通知。 */
+    static final String ACTION_BUDGET_CHANGED = "com.wind.timetracker.BUDGET_CHANGED";
     static final String PREFS_POMODORO = "pomodoro";
     static final String KEY_POMODORO_PHASE = "phase";
     static final String KEY_POMODORO_END_MS = "end_ms";
@@ -166,11 +168,13 @@ public final class CollectorService extends Service {
     /** 计步传感器只在主线程注册/注销；最新累计步数（开机以来），未知为 -1。 */
     private SensorEventListener stepListener;
     private volatile long latestStepCount = -1;
+    private ScreenBudget budget;
 
     @Override
     public void onCreate() {
         super.onCreate();
         database = new DatabaseHelper(this);
+        budget = ScreenBudget.get(this);
         createNotificationChannel();
         startAsForeground();
         registerStateReceiver();
@@ -181,6 +185,8 @@ public final class CollectorService extends Service {
             // 运行中才授予计步权限时，在下一次采样补注册。
             if (stepListener == null) mainHandler.post(this::startStepCounterIfAllowed);
             saveSnapshot("sample");
+            budget.save();
+            updateBudgetNotification();
         }, 0, 30, TimeUnit.SECONDS);
         executor.scheduleWithFixedDelay(this::checkPomodoroTransition, 0, 1, TimeUnit.SECONDS);
         executor.scheduleWithFixedDelay(this::checkContinuousUsage, 0, 5, TimeUnit.SECONDS);
@@ -197,7 +203,14 @@ public final class CollectorService extends Service {
             } catch (RuntimeException ignored) { }
         });
         executor.scheduleWithFixedDelay(() -> {
-            if (hasUsageAccess() && isDeviceActivelyUsed()) updateForegroundAllowed(appBlocker.check());
+            long now = System.currentTimeMillis();
+            if (hasUsageAccess() && isDeviceActivelyUsed()) {
+                String pkg = appBlocker.check();
+                updateForegroundAllowed(pkg);
+                budget.tickUsage(pkg, now);
+            } else {
+                budget.idle(now);
+            }
         }, 0, 1, TimeUnit.SECONDS);
     }
 
@@ -259,6 +272,8 @@ public final class CollectorService extends Service {
             String packages = String.join(",", AppBlocker.blockedPackages(this));
             if (executor != null) executor.execute(() ->
                     saveSnapshot(AppBlocker.EVENT_SETTINGS, packages));
+        } else if (intent != null && ACTION_BUDGET_CHANGED.equals(intent.getAction())) {
+            if (executor != null) executor.execute(this::updateBudgetNotification);
         } else if (intent != null && ACTION_USAGE_ALERT_RESPONSE.equals(intent.getAction())) {
             String response = intent.getStringExtra(EXTRA_USAGE_ALERT_RESPONSE);
             getSystemService(NotificationManager.class).cancel(USAGE_REMINDER_NOTIFICATION_ID);
@@ -273,22 +288,36 @@ public final class CollectorService extends Service {
         return START_STICKY;
     }
 
-    private void startAsForeground() {
+    /** 常驻通知：显示手机额度（只记账，不拦截）。 */
+    private Notification buildNotification() {
         Intent openIntent = new Intent(this, MainActivity.class);
         PendingIntent contentIntent = PendingIntent.getActivity(this, 0, openIntent,
                 PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
         Intent stopIntent = new Intent(this, CollectorService.class).setAction(ACTION_STOP);
         PendingIntent stopPending = PendingIntent.getService(this, 1, stopIntent,
                 PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
-
-        Notification notification = new Notification.Builder(this, CHANNEL_ID)
+        ScreenBudget.Snapshot b = budget.snapshot();
+        return new Notification.Builder(this, CHANNEL_ID)
                 .setSmallIcon(R.drawable.ic_tracker)
-                .setContentTitle(getString(R.string.app_name))
-                .setContentText(getString(R.string.notification_text))
+                .setContentTitle(BudgetText.title(b))
+                .setContentText(BudgetText.line(b))
+                .setStyle(new Notification.BigTextStyle().bigText(BudgetText.line(b) + "\n" + BudgetText.sources(b)))
                 .setContentIntent(contentIntent)
                 .setOngoing(true)
+                .setOnlyAlertOnce(true)
+                .setShowWhen(false)
                 .addAction(new Notification.Action.Builder(null, "停止", stopPending).build())
                 .build();
+    }
+
+    private void updateBudgetNotification() {
+        try {
+            getSystemService(NotificationManager.class).notify(NOTIFICATION_ID, buildNotification());
+        } catch (RuntimeException ignored) { }
+    }
+
+    private void startAsForeground() {
+        Notification notification = buildNotification();
 
         locationForegroundActive = false;
         try {
@@ -1238,6 +1267,7 @@ public final class CollectorService extends Service {
         SensorEventListener listener = new SensorEventListener() {
             @Override public void onSensorChanged(SensorEvent event) {
                 latestStepCount = (long) event.values[0];
+                budget.onStepCount(latestStepCount, isScreenOn());
             }
             @Override public void onAccuracyChanged(Sensor sensor, int accuracy) { }
         };
@@ -1280,6 +1310,7 @@ public final class CollectorService extends Service {
         if (stateReceiver != null) unregisterReceiver(stateReceiver);
         if (locationManager != null && locationListener != null) locationManager.removeUpdates(locationListener);
         stopStepCounter();
+        if (budget != null) budget.save();
         resetContinuousUsageSession();
         removeUsageReminderOverlay();
         if (appBlocker != null) appBlocker.removeOverlay();
