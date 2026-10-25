@@ -136,7 +136,25 @@ final class ScreenBudget {
         prefs = context.getSharedPreferences("screen_budget", Context.MODE_PRIVATE);
         database = new DatabaseHelper(context);
         load();
+        refundFreeApps();
         rollover(System.currentTimeMillis());
+    }
+
+    /** 后来加进白名单的应用：当天已经记的用时退回来。 */
+    private void refundFreeApps() {
+        JSONObject refunded = new JSONObject();
+        for (Iterator<Map.Entry<String, Long>> it = appMs.entrySet().iterator(); it.hasNext(); ) {
+            Map.Entry<String, Long> e = it.next();
+            if (isGated(e.getKey())) continue;
+            usedMs -= e.getValue();
+            put(refunded, e.getKey(), e.getValue() / 60000.0);
+            it.remove();
+        }
+        if (refunded.length() == 0) return;
+        usedMs = Math.max(usedMs, 0);
+        overMs = Math.min(overMs, usedMs);
+        save();
+        log("budget_refund", refunded.toString());
     }
 
     // ---------- 白名单 ----------

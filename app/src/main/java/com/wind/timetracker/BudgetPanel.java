@@ -84,11 +84,16 @@ final class BudgetPanel {
         if (apps.isEmpty()) return "还没用";
         StringBuilder s = new StringBuilder();
         int n = 0;
+        long otherMs = 0;
         for (Map.Entry<String, Long> e : apps) {
-            if (n++ == 4) break;
+            if (n++ >= 4) {
+                otherMs += e.getValue();
+                continue;
+            }
             if (s.length() > 0) s.append(" · ");
             s.append(label(e.getKey())).append(' ').append(Math.round(e.getValue() / 60000.0));
         }
+        if (n > 4) s.append(" · 其他 ").append(n - 4).append(" 个 ").append(Math.round(otherMs / 60000.0));
         return s.toString();
     }
 
