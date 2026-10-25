@@ -88,6 +88,8 @@ final class ScreenBudget {
             "com.google.android.apps.docs.editors.sheets", "com.google.android.apps.docs.editors.slides",
             "com.google.android.calendar", "com.google.android.apps.tasks", "com.google.android.apps.translate",
             "com.baidu.baidutranslate", "md.obsidian", "notion.id",
+            // LearningPack 手机复习：在上面学的时间同步到 iPad，算进学习码，不能再扣额度
+            "com.wind.learningpack",
             // 英语、音乐
             "com.wind.subword", "com.bilingify.readest", "epub.reader", "com.google.android.youtube",
             "com.apple.android.music",
